@@ -1,0 +1,415 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  aws-jam
+
+  Sample SAM Template for aws-jam
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    Environment:
+      Variables:
+        GAMES_TABLE: !Ref GamesTable
+        GAME_SESSIONS_TABLE: !Ref GameSessionsTable
+        S3_BUCKET_NAME: !Ref S3BucketName
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: "cloudraiser-673000199571"
+
+Resources:
+
+  UtilsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-utils-layer"
+      Description: Shared utilities for game management including account_manager
+      ContentUri: layers/utils-layer/
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.9
+
+  GamesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Games"
+      AttributeDefinitions:
+        - AttributeName: "id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "id"
+          KeyType: "HASH"
+      BillingMode: PAY_PER_REQUEST
+
+  GameSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Game-Sessions"
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+        - AttributeName: user_name
+          AttributeType: S
+        - AttributeName: game_id
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user_game_index
+          KeySchema:
+            - AttributeName: user_name
+              KeyType: HASH
+            - AttributeName: game_id
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: account_index
+          KeySchema:
+            - AttributeName: account_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+
+  GetGamesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/get_games/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GamesTable
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  GetGameByIdFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/get_game_by_id/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GamesTable
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  GetGameSessionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/get_game_session/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - AWSCloudFormationFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
+                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}/session
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  StartGameSessionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/start_game_session/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - AWSCloudFormationFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - AmazonS3ReadOnlyAccess
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
+                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}/start
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  EndGameSessionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/end_game_session/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - AWSCloudFormationFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
+                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}/end
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  SubmitTaskAnswerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/submit_task_answer/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GamesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: "*"  # Allow invoking any lambda (validate_task functions)
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
+                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}/tasks/{taskId}/answer
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+
+  GetAccountStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/get_account_status/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
+                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /accounts/status
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      EndpointConfiguration:
+        Type: REGIONAL
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-OAC"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+      AutoVerifiedAttributes:
+        - email
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ClientName: !Sub "${AWS::StackName}-user-pool-client"
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+Outputs:
+  GamesApi:
+    Description: "API Gateway endpoint URL for Prod stage for Games functions"
+    Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/games/"
+
+  BucketName:
+    Description: "S3 bucket for the frontend"
+    Value: !Ref FrontendBucket
+
+  BucketURL:
+    Description: "URL for the frontend"
+    Value: !GetAtt FrontendBucket.WebsiteURL
+
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref CognitoUserPool
+
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref CognitoUserPoolClient
