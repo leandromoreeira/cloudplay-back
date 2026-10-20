@@ -1,23 +1,19 @@
 import os
 import json
 import boto3
-import jwt
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from access_control import get_identity, can_access_game
 
 
 def lambda_handler(event, context):
 
     game_id = event['pathParameters']['gameId']
-    auth_header = event['headers'].get('Authorization')
+    user_name, groups = get_identity(event)
 
-    try:
-        jwt_token = auth_header.split(' ')[1]
-        decoded_token = jwt.decode(jwt_token, options={"verify_signature": False})
-        user_name = decoded_token.get('email')
-    except Exception as e:
+    if not user_name:
         return {
             'statusCode': 401,
             'headers': {
@@ -25,6 +21,16 @@ def lambda_handler(event, context):
                 'Access-Control-Allow-Origin': '*'
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
+        }
+
+    if not can_access_game(user_name, groups, game_id):
+        return {
+            'statusCode': 403,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'message': 'You do not have access to this game'})
         }
 
     # Initialize account manager
@@ -128,6 +134,10 @@ def lambda_handler(event, context):
                         }
                     )
                     session['active'] = False  # Update local session object
+                    # The stack is gone, so the teardown this account was held
+                    # for is done and it can go back to the pool
+                    if account_id:
+                        account_manager.mark_available(account_id)
                 else:
                     print(f"Error checking stack status: {e}")
                     stack_status = 'ERROR'

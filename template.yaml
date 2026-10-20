@@ -13,12 +13,30 @@ Globals:
       Variables:
         GAMES_TABLE: !Ref GamesTable
         GAME_SESSIONS_TABLE: !Ref GameSessionsTable
+        GAME_ACCESS_TABLE: !Ref GameAccessTable
+        GAME_ACCOUNTS_TABLE: !Ref GameAccountsTable
         S3_BUCKET_NAME: !Ref S3BucketName
 
 Parameters:
   S3BucketName:
     Type: String
     Default: "cloudraiser-673000199571"
+
+  OrganizationId:
+    Type: String
+    Description: >
+      Organization ID (o-xxxx). Scopes the cross-account AssumeRole permission
+      to accounts inside this organization, which is what makes the account
+      wildcard below safe.
+    AllowedPattern: "^o-[0-9a-z]{10,32}$"
+    Default: "o-prvoj7g1n5"
+
+  GameAccountRoleName:
+    Type: String
+    Default: CloudPlayGameRole
+    Description: >
+      Role the orchestrator assumes in accounts vended by manage_accounts.py.
+      Must match the role name in org/organization.yaml.
 
 Resources:
 
@@ -79,15 +97,50 @@ Resources:
             ProjectionType: ALL
       BillingMode: PAY_PER_REQUEST
 
+  # Pool of AWS accounts games get deployed into. One item per account, holding
+  # the account's lifecycle state (AVAILABLE / IN_USE / CLEANING / QUARANTINED)
+  # so an account being torn down is never handed to a new player.
+  GameAccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Game-Accounts"
+      AttributeDefinitions:
+        - AttributeName: "account_id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "account_id"
+          KeyType: "HASH"
+      BillingMode: PAY_PER_REQUEST
+
+  GameAccessTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Game-Access"
+      AttributeDefinitions:
+        - AttributeName: "user_email"
+          AttributeType: "S"
+        - AttributeName: "game_id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "user_email"
+          KeyType: "HASH"
+        - AttributeName: "game_id"
+          KeyType: "RANGE"
+      BillingMode: PAY_PER_REQUEST
+
   GetGamesFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: games/get_games/
       Handler: app.lambda_handler
       Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
       Architectures:
         - x86_64
       Events:
@@ -106,9 +159,13 @@ Resources:
       CodeUri: games/get_game_by_id/
       Handler: app.lambda_handler
       Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
       Architectures:
         - x86_64
       Events:
@@ -133,14 +190,21 @@ Resources:
         - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccountsTable
         - Version: "2012-10-17"
           Statement:
+            # Wildcard on the account, specific on the role name, confined to
+            # this organization. Adding an account never touches this template.
             - Effect: Allow
               Action:
                 - sts:AssumeRole
-              Resource:
-                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
-                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -165,15 +229,20 @@ Resources:
         - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccountsTable
         - AmazonS3ReadOnlyAccess
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
               Action:
                 - sts:AssumeRole
-              Resource:
-                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
-                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -198,14 +267,19 @@ Resources:
         - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccountsTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
               Action:
                 - sts:AssumeRole
-              Resource:
-                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
-                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -231,6 +305,8 @@ Resources:
             TableName: !Ref GamesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
@@ -240,9 +316,10 @@ Resources:
             - Effect: Allow
               Action:
                 - sts:AssumeRole
-              Resource:
-                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
-                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -267,14 +344,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - sts:AssumeRole
-              Resource:
-                - "arn:aws:iam::021914682333:role/OrganizationAccountAccessRole"
-                - "arn:aws:iam::339105149717:role/OrganizationAccountAccessRole"
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccountsTable
       Architectures:
         - x86_64
       Events:
@@ -383,6 +454,13 @@ Resources:
       AutoVerifiedAttributes:
         - email
 
+  FullAccessUserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      GroupName: full-access
+      Description: Users who can see and play every game, bypassing per-game access grants
+
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -405,6 +483,10 @@ Outputs:
   BucketURL:
     Description: "URL for the frontend"
     Value: !GetAtt FrontendBucket.WebsiteURL
+
+  CloudFrontURL:
+    Description: "CloudFront URL for the frontend"
+    Value: !Sub "https://${CloudFrontDistribution.DomainName}"
 
   UserPoolId:
     Description: "Cognito User Pool ID"

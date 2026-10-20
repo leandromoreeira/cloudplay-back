@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Organizational unit and service control policy for the AWS accounts that
+  games are deployed into.
+
+  Deploy this ONCE, in the organization's management account, in us-east-1.
+  It is deliberately a separate stack from the aws-jam application: these are
+  governance resources, and a bad deploy of the app stack must never be able to
+  detach the SCP from accounts that are holding live game sessions.
+
+  Prerequisites (one-time, not expressible in CloudFormation):
+    - All features enabled in the organization
+    - SERVICE_CONTROL_POLICY policy type enabled on the root
+
+    aws organizations enable-all-features
+    aws organizations enable-policy-type --root-id <r-xxxx> \
+        --policy-type SERVICE_CONTROL_POLICY
+
+Parameters:
+  RootId:
+    Type: String
+    Description: "Organization root ID the OU hangs off (r-xxxx). From: aws organizations list-roots"
+    AllowedPattern: "^r-[0-9a-z]{4,32}$"
+
+  OrganizationalUnitName:
+    Type: String
+    Default: CloudPlayGames
+    Description: Name of the OU holding the game accounts
+
+  GameAccountRoleName:
+    Type: String
+    Default: CloudPlayGameRole
+    Description: >
+      Name of the cross-account role the orchestrator assumes in each game
+      account. The SCP protects it from being deleted or altered, including by
+      an over-eager account nuke.
+
+  AllowedRegions:
+    Type: CommaDelimitedList
+    Default: "us-east-1"
+    Description: >
+      Regions games may use. Keeping this tight is what keeps an account nuke
+      fast, since the sweep only has to cover these regions.
+
+Resources:
+  GamesOrganizationalUnit:
+    Type: AWS::Organizations::OrganizationalUnit
+    Properties:
+      Name: !Ref OrganizationalUnitName
+      ParentId: !Ref RootId
+
+  GameAccountsPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub "${OrganizationalUnitName}-guardrails"
+      Description: Guardrails for ephemeral game accounts
+      Type: SERVICE_CONTROL_POLICY
+      TargetIds:
+        - !Ref GamesOrganizationalUnit
+      Content:
+        Version: "2012-10-17"
+        Statement:
+          # Confine games to the regions we actually sweep. Global services are
+          # exempt because their API calls are always made against us-east-1.
+          - Sid: DenyRegionsOutsideScope
+            Effect: Deny
+            NotAction:
+              - "iam:*"
+              - "organizations:*"
+              - "sts:*"
+              - "cloudfront:*"
+              - "route53:*"
+              - "route53domains:*"
+              - "support:*"
+              - "trustedadvisor:*"
+              - "shield:*"
+              - "globalaccelerator:*"
+              - "waf:*"
+              - "budgets:*"
+              - "ce:*"
+              - "cur:*"
+              - "health:*"
+              - "aws-portal:*"
+              - "aws-marketplace:*"
+              - "s3:GetBucketLocation"
+              - "s3:ListAllMyBuckets"
+              - "ec2:DescribeRegions"
+            Resource: "*"
+            Condition:
+              StringNotEquals:
+                "aws:RequestedRegion": !Ref AllowedRegions
+
+          # A game account that leaves the organization stops being reachable
+          # through the cross-account role, and stops being billed to us.
+          - Sid: DenyLeaveOrganization
+            Effect: Deny
+            Action:
+              - "organizations:LeaveOrganization"
+            Resource: "*"
+
+          # Defense in depth with the aws-nuke filter: even if the nuke config
+          # is wrong, or a player goes exploring, the access path survives.
+          #
+          # NOTE: this also blocks iam:UpdateAssumeRolePolicy on the role, so
+          # manage_accounts.py fixes the role's trust policy BEFORE moving the
+          # account into this OU. Do not reorder those steps.
+          - Sid: ProtectCrossAccountRole
+            Effect: Deny
+            Action:
+              - "iam:DeleteRole"
+              - "iam:DeleteRolePermissionsBoundary"
+              - "iam:DeleteRolePolicy"
+              - "iam:DetachRolePolicy"
+              - "iam:AttachRolePolicy"
+              - "iam:PutRolePolicy"
+              - "iam:PutRolePermissionsBoundary"
+              - "iam:UpdateRole"
+              - "iam:UpdateAssumeRolePolicy"
+            Resource:
+              - !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+Outputs:
+  OrganizationalUnitId:
+    Description: "Pass this to manage_accounts.py provision --ou-id"
+    Value: !Ref GamesOrganizationalUnit
+
+  GameAccountRoleName:
+    Description: "Role name new accounts are created with"
+    Value: !Ref GameAccountRoleName

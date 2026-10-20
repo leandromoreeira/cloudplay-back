@@ -1,12 +1,12 @@
 import json
 import boto3
-import jwt
 import os
 import re
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from access_control import get_identity, can_access_game
 
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
@@ -14,14 +14,10 @@ def lambda_handler(event, context):
     body = json.loads(event['body'])
     answer = body.get('answer')
 
-    # Extract user from JWT token
-    auth_header = event['headers'].get('Authorization')
-    try:
-        jwt_token = auth_header.split(' ')[1]
-        decoded_token = jwt.decode(jwt_token, options={"verify_signature": False})
-        user_name = decoded_token.get('email')
-        team_display_name = decoded_token.get('email', 'Unknown Team')  # Use email as team name for now
-    except Exception as e:
+    user_name, groups = get_identity(event)
+    team_display_name = user_name or 'Unknown Team'  # Use email as team name for now
+
+    if not user_name:
         return {
             'statusCode': 401,
             'headers': {
@@ -29,6 +25,16 @@ def lambda_handler(event, context):
                 'Access-Control-Allow-Origin': '*'
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
+        }
+
+    if not can_access_game(user_name, groups, game_id):
+        return {
+            'statusCode': 403,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'message': 'You do not have access to this game'})
         }
 
     # Extract task number from task_id (e.g., "task1" -> 1)

@@ -4,10 +4,16 @@ import re
 import boto3
 from botocore.exceptions import ClientError
 
+# Import from Lambda Layer
+from access_control import get_identity, get_accessible_game_ids
+
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['GAMES_TABLE'])
 
 def lambda_handler(event, context):
+    email, groups = get_identity(event)
+    accessible_game_ids = get_accessible_game_ids(email, groups)
+
     query_params = event.get('queryStringParameters') or {}
     page = int(query_params.get('page', 1))
     page_size = int(query_params.get('pageSize', 10))
@@ -40,6 +46,11 @@ def lambda_handler(event, context):
     try:
         response = table.scan(**scan_kwargs)
         items = response.get('Items', [])
+
+        # Games are private by default: keep only games this user was granted
+        # access to, unless they're in the full-access group (None = no restriction)
+        if accessible_game_ids is not None:
+            items = [item for item in items if item.get('id') in accessible_game_ids]
 
         # Filter out games that contain Chinese characters
         def contains_chinese(text):

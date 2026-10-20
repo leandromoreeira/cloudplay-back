@@ -1,25 +1,21 @@
 import os
 import json
 import boto3
-import jwt
 import uuid
 from datetime import datetime
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from access_control import get_identity, can_access_game
 
 AWS_REGION = os.environ['AWS_REGION']
 
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
-    auth_header = event['headers'].get('Authorization')
+    user_name, groups = get_identity(event)
 
-    try:
-        jwt_token = auth_header.split(' ')[1]
-        decoded_token = jwt.decode(jwt_token, options={"verify_signature": False})
-        user_name = decoded_token.get('email')
-    except Exception as e:
+    if not user_name:
         return {
             'statusCode': 401,
             'headers': {
@@ -27,6 +23,16 @@ def lambda_handler(event, context):
                 'Access-Control-Allow-Origin': '*'
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
+        }
+
+    if not can_access_game(user_name, groups, game_id):
+        return {
+            'statusCode': 403,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'message': 'You do not have access to this game'})
         }
 
     # Initialize account manager
@@ -58,8 +64,10 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': 'You already have this game in progress'})
             }
 
-        # Find an available account for deployment
-        selected_account = account_manager.get_available_account()
+        # Claim an account for this session. The claim is atomic, so concurrent
+        # starts can't be handed the same account.
+        session_id = str(uuid.uuid4())
+        selected_account = account_manager.claim_account(session_id)
         if not selected_account:
             return {
                 'statusCode': 503,  # Service Unavailable
@@ -101,7 +109,6 @@ def lambda_handler(event, context):
             "body": json.dumps({"error": "An unexpected error occurred."}),
         }
 
-    session_id = str(uuid.uuid4())
     stack_name = f'game-session-{session_id}'
     bucket_name = os.environ['S3_BUCKET_NAME']
     template_key = f'{game_id}/{game_id}.yaml'
@@ -126,6 +133,9 @@ def lambda_handler(event, context):
         message = f'Game session {game_id} started successfully in account {selected_account}'
 
     except ClientError as e:
+        # Nothing was deployed, so hand the account straight back to the pool
+        account_manager.mark_available(selected_account)
+
         if e.response['Error']['Code'] == 'NoSuchKey':
             print(f"Error: Template not found at s3://{bucket_name}/{template_key}")
             return {
@@ -149,6 +159,7 @@ def lambda_handler(event, context):
             }),
         }
     except Exception as e:
+        account_manager.mark_available(selected_account)
         print(f"An unexpected error occurred during deployment: {e}")
         return {
             "statusCode": 500,

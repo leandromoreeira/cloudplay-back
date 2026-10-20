@@ -2,24 +2,20 @@ import json
 import boto3
 import os
 from datetime import datetime
-import jwt
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from access_control import get_identity, can_access_game
 
 
 AWS_REGION = os.environ['AWS_REGION']
 
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
-    auth_header = event['headers'].get('Authorization')
+    user_name, groups = get_identity(event)
 
-    try:
-        jwt_token = auth_header.split(' ')[1]
-        decoded_token = jwt.decode(jwt_token, options={"verify_signature": False})
-        user_name = decoded_token.get('email')
-    except Exception as e:
+    if not user_name:
         return {
             'statusCode': 401,
             'headers': {
@@ -27,6 +23,16 @@ def lambda_handler(event, context):
                 'Access-Control-Allow-Origin': '*'
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
+        }
+
+    if not can_access_game(user_name, groups, game_id):
+        return {
+            'statusCode': 403,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps({'message': 'You do not have access to this game'})
         }
 
     # Initialize account manager
@@ -97,6 +103,13 @@ def lambda_handler(event, context):
             else:
                 print(f"Error deleting CloudFormation stack: {e}")
                 final_stack_status = 'DELETE_FAILED'
+                # The account still holds whatever the stack left behind, so it
+                # stays out of the pool until someone looks at it.
+                if account_id:
+                    account_manager.mark_quarantined(
+                        account_id,
+                        f"delete_stack failed for {stack_name}: {e.response['Error']['Message']}"
+                    )
                 return {
                     "statusCode": 500,
                     'headers': {
@@ -121,6 +134,9 @@ def lambda_handler(event, context):
                     ':stack_status': final_stack_status
                 }
             )
+            # Nothing left to tear down, so the account is reusable right away
+            if account_id:
+                account_manager.mark_available(account_id)
         else:
             # Keep session active during deletion process
             table.update_item(
@@ -131,6 +147,9 @@ def lambda_handler(event, context):
                     ':stack_status': final_stack_status
                 }
             )
+            # Teardown is in flight; the account stays held until it finishes
+            if account_id:
+                account_manager.mark_cleaning(account_id)
 
         return {
             'statusCode': 200,

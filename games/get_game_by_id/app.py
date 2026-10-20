@@ -3,17 +3,23 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
+# Import from Lambda Layer
+from access_control import get_identity, can_access_game
+
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['GAMES_TABLE'])
 
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
+    email, groups = get_identity(event)
 
     try:
         response = table.get_item(Key={'id': game_id})
         item = response.get('Item')
 
-        if not item:
+        # Return the same 404 whether the game doesn't exist or the user has
+        # no access to it, so callers can't probe for restricted game ids.
+        if not item or not can_access_game(email, groups, game_id):
             return {
                 'statusCode': 404,
                 'headers': {

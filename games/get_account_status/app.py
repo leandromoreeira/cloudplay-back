@@ -54,6 +54,8 @@ def lambda_handler(event, context):
         total_accounts = len(account_status)
         available_accounts = len([acc for acc in account_status if acc.get('is_available', False)])
         busy_accounts = total_accounts - available_accounts
+        cleaning_accounts = len([acc for acc in account_status if acc.get('status') == 'CLEANING'])
+        quarantined_accounts = len([acc for acc in account_status if acc.get('status') == 'QUARANTINED'])
 
         response_data = {
             'accounts': account_status,
@@ -61,6 +63,8 @@ def lambda_handler(event, context):
                 'total_accounts': total_accounts,
                 'available_accounts': available_accounts,
                 'busy_accounts': busy_accounts,
+                'cleaning_accounts': cleaning_accounts,
+                'quarantined_accounts': quarantined_accounts,
                 'all_busy': available_accounts == 0
             }
         }
