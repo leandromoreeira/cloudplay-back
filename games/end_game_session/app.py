@@ -9,8 +9,6 @@ from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
 
 
-AWS_REGION = os.environ['AWS_REGION']
-
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
     user_name, groups = get_identity(event)
@@ -67,89 +65,85 @@ def lambda_handler(event, context):
         session = response['Items'][0]
         session_id = session['session_id']
         account_id = session.get('account_id')  # Get the account where game is deployed
-        stack_name = f'game-session-{session_id}'
 
-        # Update stack status to indicate deletion is starting
+        # The session is over for the player the moment they ask to end it.
+        # Wiping the account happens in the background; they don't wait for it.
         table.update_item(
             Key={'session_id': session_id},
-            UpdateExpression='SET stack_status = :status',
+            UpdateExpression='SET active = :active, end_time = :end_time, stack_status = :status',
             ExpressionAttributeValues={
-                ':status': 'DELETE_IN_PROGRESS'
+                ':active': False,
+                ':end_time': datetime.utcnow().isoformat() + 'Z',
+                ':status': 'CLEANUP_IN_PROGRESS'
             }
         )
 
+        if not account_id:
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'message': f'Game session {game_id} ended successfully',
+                    'sessionId': session_id,
+                    'accountId': None
+                })
+            }
+
+        # Hold the account before kicking off the wipe. The build refuses to run
+        # against an account that isn't CLEANING, so this has to come first.
+        if not account_manager.mark_cleaning(account_id):
+            print(f"Account {account_id} was not IN_USE, skipping cleanup build")
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'message': f'Game session {game_id} ended successfully',
+                    'sessionId': session_id,
+                    'accountId': account_id
+                })
+            }
+
         try:
-            # Use cross-account CloudFormation client if account_id is specified
-            if account_id:
-                cf_client = account_manager.create_cross_account_clients(account_id)
-                print(f"Using cross-account CloudFormation client for account {account_id} to delete stack {stack_name}")
-            else:
-                # Fallback to local account (for backward compatibility)
-                cf_client = boto3.client('cloudformation')
-                print(f"Using local CloudFormation client to delete stack {stack_name} (no account_id found)")
+            build = boto3.client('codebuild').start_build(
+                projectName=os.environ['CLEANUP_PROJECT_NAME'],
+                environmentVariablesOverride=[
+                    {'name': 'TARGET_ACCOUNT', 'value': account_id, 'type': 'PLAINTEXT'}
+                ]
+            )
+            build_id = build['build']['id']
+            print(f"Started cleanup build {build_id} for account {account_id}")
 
-            print(f"Deleting CloudFormation stack {stack_name}")
-            cf_client.delete_stack(StackName=stack_name)
-            message = f'Game session {game_id} ended successfully'
-
-            # Update stack status to indicate deletion was initiated
-            final_stack_status = 'DELETE_IN_PROGRESS'
-
+            table.update_item(
+                Key={'session_id': session_id},
+                UpdateExpression='SET cleanup_build_id = :build_id',
+                ExpressionAttributeValues={':build_id': build_id}
+            )
         except ClientError as e:
-            if e.response['Error']['Code'] == 'ValidationError' and 'does not exist' in e.response['Error']['Message']:
-                print(f"Stack {stack_name} does not exist, continuing with session cleanup")
-                message = f'Game session {game_id} ended successfully (stack already removed)'
-                final_stack_status = 'DELETE_COMPLETE'
-            else:
-                print(f"Error deleting CloudFormation stack: {e}")
-                final_stack_status = 'DELETE_FAILED'
-                # The account still holds whatever the stack left behind, so it
-                # stays out of the pool until someone looks at it.
-                if account_id:
-                    account_manager.mark_quarantined(
-                        account_id,
-                        f"delete_stack failed for {stack_name}: {e.response['Error']['Message']}"
-                    )
-                return {
-                    "statusCode": 500,
-                    'headers': {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
-                    },
-                    "body": json.dumps({
-                        "error": "Could not delete CloudFormation stack.",
-                        "details": e.response["Error"]["Message"],
-                    }),
-                }
-
-        # Update the DynamoDB record to set end_time and stack_status, but keep active=true during deletion
-        if final_stack_status == 'DELETE_COMPLETE':
-            # Only set active=false when deletion is complete
-            table.update_item(
-                Key={'session_id': session_id},
-                UpdateExpression='SET active = :active, end_time = :end_time, stack_status = :stack_status',
-                ExpressionAttributeValues={
-                    ':active': False,
-                    ':end_time': datetime.utcnow().isoformat() + 'Z',
-                    ':stack_status': final_stack_status
-                }
+            # The account is dirty and nothing is coming to clean it, so it
+            # must not go back into the pool on its own.
+            print(f"Could not start cleanup build: {e}")
+            account_manager.mark_quarantined(
+                account_id,
+                f"could not start cleanup build: {e.response['Error']['Message']}"
             )
-            # Nothing left to tear down, so the account is reusable right away
-            if account_id:
-                account_manager.mark_available(account_id)
-        else:
-            # Keep session active during deletion process
-            table.update_item(
-                Key={'session_id': session_id},
-                UpdateExpression='SET end_time = :end_time, stack_status = :stack_status',
-                ExpressionAttributeValues={
-                    ':end_time': datetime.utcnow().isoformat() + 'Z',
-                    ':stack_status': final_stack_status
-                }
-            )
-            # Teardown is in flight; the account stays held until it finishes
-            if account_id:
-                account_manager.mark_cleaning(account_id)
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'error': 'Session ended but account cleanup could not be started.',
+                    'sessionId': session_id,
+                    'accountId': account_id
+                })
+            }
 
         return {
             'statusCode': 200,
@@ -158,9 +152,10 @@ def lambda_handler(event, context):
                 'Access-Control-Allow-Origin': '*'
             },
             'body': json.dumps({
-                'message': message,
+                'message': f'Game session {game_id} ended successfully',
                 'sessionId': session_id,
-                'accountId': account_id
+                'accountId': account_id,
+                'cleanupBuildId': build_id
             })
         }
 

@@ -134,10 +134,10 @@ def lambda_handler(event, context):
                         }
                     )
                     session['active'] = False  # Update local session object
-                    # The stack is gone, so the teardown this account was held
-                    # for is done and it can go back to the pool
-                    if account_id:
-                        account_manager.mark_available(account_id)
+                    # Deliberately does NOT release the account: the stack
+                    # disappearing is the start of the account wipe, not the end
+                    # of it. The cleanup build's result decides when the account
+                    # goes back into the pool.
                 else:
                     print(f"Error checking stack status: {e}")
                     stack_status = 'ERROR'

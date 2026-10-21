@@ -263,8 +263,12 @@ Resources:
       Runtime: python3.9
       Layers:
         - !Ref UtilsLayer
+      Environment:
+        Variables:
+          CLEANUP_PROJECT_NAME: !Ref AccountCleanupProject
+      # No longer deletes the stack or reaches into the game account: it ends
+      # the session and hands the account to the cleanup build.
       Policies:
-        - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
@@ -274,12 +278,8 @@ Resources:
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
-              Action:
-                - sts:AssumeRole
-              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
-              Condition:
-                StringEquals:
-                  aws:ResourceOrgID: !Ref OrganizationId
+              Action: codebuild:StartBuild
+              Resource: !GetAtt AccountCleanupProject.Arn
       Architectures:
         - x86_64
       Events:
@@ -357,6 +357,147 @@ Resources:
             RestApiId: !Ref RestApi
             Auth:
               Authorizer: CognitoAuthorizer
+
+  # Wipes a game account after its session ends. CloudFormation delete leaves
+  # behind anything the player created or modified outside the stack, so the
+  # account is swept instead of the stack being deleted.
+  AccountCleanupProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-account-cleanup"
+      Description: Runs aws-nuke against a single game account
+      ServiceRole: !GetAtt AccountCleanupRole.Arn
+      # Labs with databases, EKS clusters and the like take a long time to
+      # tear down, so this is generous on purpose.
+      TimeoutInMinutes: 60
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: TARGET_ACCOUNT
+            Value: "unset"
+          - Name: GAME_ACCOUNTS_TABLE
+            Value: !Ref GameAccountsTable
+          - Name: GAME_ACCOUNT_ROLE_NAME
+            Value: !Ref GameAccountRoleName
+          # Lives in the cloudraiser-games repo (nuke/aws-nuke.yaml) and gets
+          # here with the normal games sync, so it is versioned alongside the
+          # game templates rather than in this one.
+          - Name: NUKE_CONFIG_S3
+            Value: !Sub "s3://${S3BucketName}/nuke/aws-nuke.yaml"
+          - Name: AWS_NUKE_VERSION
+            Value: "3.68.3"
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - set -eu
+                # Refuse to wipe an account the orchestrator has not put into
+                # CLEANING. Without this, a hand-started build could sweep an
+                # account that is mid-session.
+                - |
+                  STATUS=$(aws dynamodb get-item \
+                      --table-name "$GAME_ACCOUNTS_TABLE" \
+                      --key "{\"account_id\":{\"S\":\"$TARGET_ACCOUNT\"}}" \
+                      --query 'Item.status.S' --output text)
+                  if [ "$STATUS" != "CLEANING" ]; then
+                    echo "Account $TARGET_ACCOUNT is '$STATUS', expected CLEANING. Refusing to run."
+                    exit 1
+                  fi
+                - |
+                  curl -sSLf -o /tmp/aws-nuke.tar.gz \
+                    "https://github.com/ekristen/aws-nuke/releases/download/v${AWS_NUKE_VERSION}/aws-nuke-v${AWS_NUKE_VERSION}-linux-amd64.tar.gz"
+                - tar -xzf /tmp/aws-nuke.tar.gz -C /usr/local/bin aws-nuke
+                - aws s3 cp "$NUKE_CONFIG_S3" /tmp/base.yaml
+                # The base config carries no account list; scope this run to
+                # exactly the account we were handed.
+                - |
+                  { cat /tmp/base.yaml
+                    printf '\naccounts:\n  "%s":\n    presets:\n      - access\n      - defaults\n' "$TARGET_ACCOUNT"
+                    printf '\nbypass-alias-check-accounts:\n  - "%s"\n' "$TARGET_ACCOUNT"
+                  } > /tmp/nuke.yaml
+            build:
+              commands:
+                - |
+                  aws-nuke run -c /tmp/nuke.yaml \
+                    --assume-role-arn "arn:aws:iam::${TARGET_ACCOUNT}:role/${GAME_ACCOUNT_ROLE_NAME}" \
+                    --default-region us-east-1 \
+                    --no-alias-check --no-prompt --no-dry-run \
+                    --max-wait-retries 5 --quiet
+
+  AccountCleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: account-cleanup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-account-cleanup*"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${S3BucketName}/nuke/*"
+              - Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt GameAccountsTable.Arn
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+                Condition:
+                  StringEquals:
+                    aws:ResourceOrgID: !Ref OrganizationId
+
+  # The build itself never writes account state. This owns that transition, so
+  # a build that times out or is stopped still releases or quarantines the
+  # account instead of leaving it stuck in CLEANING forever.
+  CleanupResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/cleanup_result/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccountsTable
+      Architectures:
+        - x86_64
+      Events:
+        BuildStateChange:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.codebuild
+              detail-type:
+                - CodeBuild Build State Change
+              detail:
+                project-name:
+                  - !Sub "${AWS::StackName}-account-cleanup"
+                build-status:
+                  - SUCCEEDED
+                  - FAILED
+                  - STOPPED
+                  - TIMED_OUT
 
   RestApi:
     Type: AWS::Serverless::Api
