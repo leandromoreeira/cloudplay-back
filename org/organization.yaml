@@ -16,6 +16,11 @@ Description: >
     aws organizations enable-policy-type --root-id <r-xxxx> \
         --policy-type SERVICE_CONTROL_POLICY
 
+  It also owns the cost guardrails: one budget covering the whole
+  organization, and the SCP Budgets attaches to the games OU when spend
+  crosses the freeze threshold. While a freeze is on, deleting this stack
+  fails until that policy is detached.
+
 Parameters:
   RootId:
     Type: String
@@ -35,12 +40,48 @@ Parameters:
       account. The SCP protects it from being deleted or altered, including by
       an over-eager account nuke.
 
+  PlayerRoleName:
+    Type: String
+    Default: HengHaTeamRole
+    Description: >
+      Role players log into their game account with. The AWS Jam convention,
+      and several game templates reference it by this name. Must match
+      ROLE_NAME in layers/utils-layer/team_role.py.
+
   AllowedRegions:
     Type: CommaDelimitedList
     Default: "us-east-1"
     Description: >
       Regions games may use. Keeping this tight is what keeps an account nuke
       fast, since the sweep only has to cover these regions.
+
+  OrganizationId:
+    Type: String
+    Description: "Organization ID (o-xxxx). Used to scope what AWS Budgets may attach."
+    AllowedPattern: "^o-[0-9a-z]{10,32}$"
+    Default: "o-prvoj7g1n5"
+
+  AlertEmail:
+    Type: String
+    Default: leandro.lx3@gmail.com
+    Description: Where budget warnings and the freeze notice are sent.
+
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: >
+      Monthly consolidated spend, in USD, that the whole organization is
+      expected to stay under. Crossing it only sends mail.
+
+  FreezeThreshold:
+    Type: Number
+    Default: 150
+    MinValue: 1
+    Description: >
+      Monthly consolidated spend, in USD, at which the game accounts are
+      frozen. Must be above MonthlyBudgetLimit: the warning is supposed to
+      arrive before the brake is pulled.
 
 Resources:
   GamesOrganizationalUnit:
@@ -119,6 +160,285 @@ Resources:
             Resource:
               - !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
 
+          # The player's own role.
+          #
+          # Two deliberate holes, both for the orchestrator's benefit:
+          # iam:PutRolePolicy and iam:DeleteRolePolicy are missing from the
+          # list because GamePolicy is rewritten on this role at the start of
+          # every session, and CloudPlayGameRole is exempt from the rest
+          # because ensure_team_role refreshes the trust policy on a role
+          # that already exists. Without that exemption the first session in
+          # a fresh account would work and every one after it would fail.
+          #
+          # What stops the *player* using those same calls on themselves is
+          # the role's own HengHaGuardrails policy, which denies them.
+          - Sid: ProtectPlayerRole
+            Effect: Deny
+            Action:
+              - "iam:DeleteRole"
+              - "iam:UpdateRole"
+              - "iam:UpdateAssumeRolePolicy"
+              - "iam:AttachRolePolicy"
+              - "iam:PutRolePermissionsBoundary"
+              - "iam:DeleteRolePermissionsBoundary"
+            Resource:
+              - !Sub "arn:aws:iam::*:role/${PlayerRoleName}"
+            Condition:
+              ArnNotLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+  # The same core denies as the HengHaGuardrails policy on HengHaTeamRole,
+  # one level up.
+  #
+  # Those guardrails are an inline policy on that role, so they only bind
+  # sessions of that role. A player whose game policy lets them create a role
+  # — and the 16 games with no iam.json get allow-everything — could make one
+  # without guardrails and walk around them. An SCP binds every principal in
+  # the account, so this is the copy that cannot be escaped from inside.
+  #
+  # CloudPlayGameRole is exempt: it is the orchestrator, and it has to deploy
+  # the lab, invoke the validators to grade answers, and nuke the account.
+  PlayerGuardrailsPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub "${OrganizationalUnitName}-player-guardrails"
+      Description: What a player must not do in a game account, whatever their game policy allows
+      Type: SERVICE_CONTROL_POLICY
+      TargetIds:
+        - !Ref GamesOrganizationalUnit
+      Content:
+        Version: "2012-10-17"
+        Statement:
+          # lambda:GetFunction returns a download URL for the code, and the
+          # code is where the expected answer is written.
+          - Sid: NoValidationFunctions
+            Effect: Deny
+            Action: "lambda:*"
+            Resource: "arn:aws:lambda:*:*:function:validate_task*"
+            Condition:
+              ArnNotLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+          - Sid: NoValidationLogs
+            Effect: Deny
+            Action:
+              - "logs:GetLogEvents"
+              - "logs:FilterLogEvents"
+              - "logs:DescribeLogStreams"
+              - "logs:StartLiveTail"
+              - "logs:StartQuery"
+            Resource:
+              - "arn:aws:logs:*:*:log-group:/aws/lambda/validate_task*"
+              - "arn:aws:logs:*:*:log-group:/aws/lambda/validate_task*:*"
+            Condition:
+              ArnNotLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+          # The lab stack: its template is the answer key, and deleting it
+          # mid-session would leave the account dirty in a way the pool does
+          # not expect.
+          - Sid: NoTouchingTheLabStack
+            Effect: Deny
+            Action:
+              - "cloudformation:DeleteStack"
+              - "cloudformation:UpdateStack"
+              - "cloudformation:UpdateTerminationProtection"
+              - "cloudformation:CancelUpdateStack"
+              - "cloudformation:ContinueUpdateRollback"
+              - "cloudformation:RollbackStack"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:GetTemplate"
+              - "cloudformation:GetTemplateSummary"
+              - "cloudformation:ListStackResources"
+              - "cloudformation:DescribeStackResource"
+              - "cloudformation:DescribeStackResources"
+            Resource: "arn:aws:cloudformation:*:*:stack/game-session-*"
+            Condition:
+              ArnNotLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+          # Credentials that would outlive the session and survive the nuke.
+          - Sid: NoIdentityOfTheirOwn
+            Effect: Deny
+            Action:
+              - "iam:CreateUser"
+              - "iam:CreateAccessKey"
+              - "iam:CreateLoginProfile"
+              - "iam:UpdateLoginProfile"
+              - "iam:CreateServiceSpecificCredential"
+              - "iam:UploadSSHPublicKey"
+              - "iam:UploadSigningCertificate"
+            Resource: "*"
+            Condition:
+              ArnNotLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+  # Pulled by AWS Budgets when spend crosses FreezeThreshold, and detached
+  # again at the start of the next budget period.
+  #
+  # This is a "stop digging" policy, not a hard stop: it blocks the actions
+  # that start or grow billable resources, and deliberately leaves every
+  # Delete/Describe/List alone so the cleanup build can still wipe an account
+  # while the freeze is on. Anything already running keeps running and keeps
+  # billing until someone tears it down.
+  AccountFreezePolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub "${OrganizationalUnitName}-freeze"
+      Description: Blocks new billable resources in the game accounts when the budget is blown
+      Type: SERVICE_CONTROL_POLICY
+      # No TargetIds on purpose: attaching this is the budget action's job.
+      Content:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: FreezeNewSpend
+            Effect: Deny
+            Action:
+              # Compute
+              - "ec2:RunInstances"
+              - "ec2:StartInstances"
+              - "ec2:CreateFleet"
+              - "ec2:RequestSpotInstances"
+              - "ec2:RequestSpotFleet"
+              - "ec2:CreateVolume"
+              - "ec2:CreateNatGateway"
+              - "autoscaling:CreateAutoScalingGroup"
+              - "autoscaling:UpdateAutoScalingGroup"
+              - "autoscaling:SetDesiredCapacity"
+              - "lambda:CreateFunction"
+              # Containers
+              - "ecs:CreateCluster"
+              - "ecs:CreateService"
+              - "ecs:UpdateService"
+              - "ecs:RunTask"
+              - "eks:CreateCluster"
+              - "eks:CreateNodegroup"
+              - "eks:CreateFargateProfile"
+              # Databases and caches, the ones that bill per hour regardless
+              - "rds:CreateDBInstance"
+              - "rds:CreateDBCluster"
+              - "rds:StartDBInstance"
+              - "rds:StartDBCluster"
+              - "rds:RestoreDBInstanceFromDBSnapshot"
+              - "rds:RestoreDBClusterFromSnapshot"
+              - "elasticache:CreateCacheCluster"
+              - "elasticache:CreateReplicationGroup"
+              - "redshift:CreateCluster"
+              - "redshift:RestoreFromClusterSnapshot"
+              # Analytics and ML: the easiest way to burn money by accident
+              - "emr:RunJobFlow"
+              - "sagemaker:CreateNotebookInstance"
+              - "sagemaker:CreateEndpoint"
+              - "sagemaker:CreateTrainingJob"
+              - "sagemaker:CreateProcessingJob"
+              - "bedrock:InvokeModel"
+              - "bedrock:InvokeModelWithResponseStream"
+              # Networking billed by the hour
+              - "elasticloadbalancing:CreateLoadBalancer"
+              - "ec2:CreateVpcEndpoint"
+              - "ec2:CreateClientVpnEndpoint"
+              - "ec2:CreateTransitGateway"
+              # A new stack would just put all of the above back
+              - "cloudformation:CreateStack"
+              - "cloudformation:UpdateStack"
+            Resource: "*"
+
+  # AWS Budgets assumes this to attach the freeze policy. Scoped to exactly
+  # one policy and one target, so the worst it can do is the thing it is for.
+  BudgetFreezeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Ref AWS::AccountId
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:aws:budgets::${AWS::AccountId}:budget/*"
+      Policies:
+        - PolicyName: attach-freeze-scp
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "organizations:AttachPolicy"
+                  - "organizations:DetachPolicy"
+                Resource:
+                  - !Sub "arn:aws:organizations::${AWS::AccountId}:policy/${OrganizationId}/service_control_policy/${AccountFreezePolicy}"
+                  - !Sub "arn:aws:organizations::${AWS::AccountId}:ou/${OrganizationId}/${GamesOrganizationalUnit}"
+
+  # Consolidated spend for the whole organization, which is what a plain COST
+  # budget in the management account already measures: every game account plus
+  # the platform's own Lambdas, tables, CloudFront and cleanup builds.
+  #
+  # Deliberately the only budget. One game account spending more than another
+  # is expected and uninteresting; the number that matters is the total.
+  OrganizationBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "${OrganizationalUnitName}-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        # The forecast is the only one that can warn before the money is spent.
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+  # The brake. Attaches the freeze policy to the games OU — every game account
+  # at once, and never the management account, which has to stay able to run
+  # the cleanup build that brings the spend back down.
+  AccountFreezeAction:
+    Type: AWS::Budgets::BudgetsAction
+    Properties:
+      BudgetName: !Ref OrganizationBudget
+      NotificationType: ACTUAL
+      ActionType: APPLY_SCP_POLICY
+      ActionThreshold:
+        Type: ABSOLUTE_VALUE
+        Value: !Ref FreezeThreshold
+      Definition:
+        ScpActionDefinition:
+          PolicyId: !Ref AccountFreezePolicy
+          TargetIds:
+            - !Ref GamesOrganizationalUnit
+      ExecutionRoleArn: !GetAtt BudgetFreezeRole.Arn
+      ApprovalModel: AUTOMATIC
+      Subscribers:
+        - Type: EMAIL
+          Address: !Ref AlertEmail
+
 Outputs:
   OrganizationalUnitId:
     Description: "Pass this to manage_accounts.py provision --ou-id"
@@ -127,3 +447,11 @@ Outputs:
   GameAccountRoleName:
     Description: "Role name new accounts are created with"
     Value: !Ref GameAccountRoleName
+
+  AccountFreezePolicyId:
+    Description: "SCP AWS Budgets attaches when spend crosses the freeze threshold"
+    Value: !Ref AccountFreezePolicy
+
+  BudgetFreezeRoleArn:
+    Description: "Role AWS Budgets assumes to attach the freeze policy"
+    Value: !GetAtt BudgetFreezeRole.Arn
