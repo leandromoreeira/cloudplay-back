@@ -6,6 +6,7 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import team_role
 from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
 
@@ -117,9 +118,20 @@ def lambda_handler(event, context):
     s3_client = boto3.client('s3')
 
     try:
+        # The player's role is set up before the lab is, so that nothing can
+        # ever hand out a session you cannot log into. Doing it first also
+        # means a failure here leaves the account untouched and the existing
+        # error path below can simply give it back to the pool.
+        iam_client = account_manager.create_cross_account_client(selected_account, 'iam')
+        team_role.ensure_team_role(iam_client, account_manager.orchestrator_account_id())
+        team_role.put_game_policy(
+            iam_client,
+            team_role.load_game_policy(s3_client, bucket_name, game_id)
+        )
+        print(f"{team_role.ROLE_NAME} ready in {selected_account} for {game_id}")
+
         # Create cross-account clients for the selected account
         cf_client = account_manager.create_cross_account_clients(selected_account)
-
 
         print(f"Creating CloudFormation stack {stack_name} in account {selected_account} using template URL {template_url}")
 

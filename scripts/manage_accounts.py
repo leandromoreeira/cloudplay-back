@@ -27,6 +27,7 @@ Examples:
   python manage_accounts.py add --account-id 369488682912
   python manage_accounts.py remove --account-id 369488682912
   python manage_accounts.py set-status --account-id 369488682912 --status AVAILABLE
+  python manage_accounts.py team-role --account-id 369488682912
 """
 
 import argparse
@@ -34,9 +35,16 @@ import json
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
+
+# The player's role and its guardrails are defined once, in the Lambda layer,
+# so this script and start_game_session can never drift apart on what a
+# guardrail is.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'layers' / 'utils-layer'))
+import team_role  # noqa: E402
 
 STATUSES = ['AVAILABLE', 'IN_USE', 'CLEANING', 'QUARANTINED']
 
@@ -210,6 +218,37 @@ def retrust_role(account_id, role_name, orchestrator_account, management_account
     print(f"✅ {role_name} now trusts orchestrator account {orchestrator_account}")
 
 
+def setup_team_role(account_id, role_name, orchestrator_account, region):
+    """
+    Put HengHaTeamRole into a game account, or refresh the one already there.
+
+    Idempotent, so it doubles as the way to roll a guardrail change out to
+    accounts that were provisioned before it existed.
+    """
+    sts = boto3.client('sts', region_name=region)
+
+    if orchestrator_account is None:
+        orchestrator_account = sts.get_caller_identity()['Account']
+
+    credentials = sts.assume_role(
+        RoleArn=f"arn:aws:iam::{account_id}:role/{role_name}",
+        RoleSessionName='CloudPlayTeamRoleSetup',
+    )['Credentials']
+
+    iam = boto3.client(
+        'iam',
+        region_name=region,
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken'],
+    )
+
+    created = team_role.ensure_team_role(iam, orchestrator_account)
+    verb = 'created in' if created else 'already in'
+    print(f"✅ {team_role.ROLE_NAME} {verb} {account_id}, "
+          f"guardrails ({team_role.GUARDRAIL_POLICY_NAME}) up to date")
+
+
 def move_to_ou(organizations, account_id, ou_id):
     root_id = organizations.list_roots()['Roots'][0]['Id']
     organizations.move_account(
@@ -235,6 +274,7 @@ def provision(table, email, account_name, ou_id, role_name, orchestrator_account
         print(f"ℹ️  Orchestrator is the management account, role trust already correct")
 
     move_to_ou(organizations, account_id, ou_id)
+    setup_team_role(account_id, role_name, orchestrator_account, region)
 
     table.put_item(
         Item={
@@ -267,6 +307,14 @@ def main():
     p.add_argument('--account-id', required=True)
     p.add_argument('--status', required=True, choices=STATUSES)
 
+    p = subparsers.add_parser('team-role',
+                              help=f"create or refresh {team_role.ROLE_NAME} in an account")
+    p.add_argument('--account-id', required=True)
+    p.add_argument('--role-name', default=DEFAULT_ROLE_NAME,
+                   help="role to assume to get in (not the one being created)")
+    p.add_argument('--orchestrator-account',
+                   help="account the role should trust (default: the caller's)")
+
     p = subparsers.add_parser('provision', help="create a new AWS account and register it")
     p.add_argument('--email', required=True, help="unique root email, e.g. you+cloudplay-03@gmail.com")
     p.add_argument('--name', help="account name (default: derived from the email)")
@@ -289,6 +337,9 @@ def main():
             remove_account(table, args.account_id)
         elif args.command == 'set-status':
             set_status(table, args.account_id, args.status)
+        elif args.command == 'team-role':
+            setup_team_role(args.account_id, args.role_name,
+                            args.orchestrator_account, args.region)
         elif args.command == 'provision':
             provision(
                 table,
