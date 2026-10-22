@@ -1,10 +1,8 @@
 import json
-import os
-import jwt
-from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from access_control import get_identity
 
 
 def lambda_handler(event, context):
@@ -13,27 +11,12 @@ def lambda_handler(event, context):
     Returns information about which accounts are available/busy.
     """
 
-    # Verify authentication
-    auth_header = event['headers'].get('Authorization')
-    if not auth_header:
-        return {
-            'statusCode': 401,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({'message': 'Authorization header required'})
-        }
+    # Identity comes from the claims the Cognito authorizer already verified,
+    # like every other handler. Decoding the token here would just be a second,
+    # unverified opinion about who the caller is.
+    user_name, _groups = get_identity(event)
 
-    try:
-        jwt_token = auth_header.split(' ')[1]
-        decoded_token = jwt.decode(jwt_token, options={"verify_signature": False})
-        user_name = decoded_token.get('email')
-
-        if not user_name:
-            raise Exception("No email in token")
-
-    except Exception as e:
+    if not user_name:
         return {
             'statusCode': 401,
             'headers': {

@@ -19,7 +19,9 @@ FULL_ACCESS_GROUP = "full-access"
 
 def get_identity(event):
     """Return (email, groups) for the authenticated caller, or (None, []) if missing."""
-    claims = (event.get('requestContext', {}) or {}).get('authorizer', {}).get('claims', {}) or {}
+    context = event.get('requestContext') or {}
+    authorizer = context.get('authorizer') or {}
+    claims = authorizer.get('claims') or {}
     email = claims.get('email')
 
     groups_claim = claims.get('cognito:groups', '')
