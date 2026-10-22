@@ -12,6 +12,8 @@ import boto3
 from datetime import datetime
 from botocore.exceptions import ClientError
 
+import team_role
+
 # Outcomes, from the happy path outwards
 STARTED = 'STARTED'          # cleanup build is running
 NO_ACCOUNT = 'NO_ACCOUNT'    # the session never held an account
@@ -21,6 +23,33 @@ FAILED = 'FAILED'            # the build wouldn't start, so the account is quara
 
 def _now():
     return datetime.utcnow().isoformat() + 'Z'
+
+
+def _revoke_console_access(account_manager, account_id):
+    """
+    Take the player's permissions away the moment their session ends.
+
+    A console session they opened lives up to an hour, and the account is
+    about to be wiped underneath them. Deleting GamePolicy leaves only the
+    deny-everything guardrails on the role, so an open console tab loses
+    everything now instead of when the credential happens to expire.
+
+    Best effort: the wipe is what actually matters and it is already on its
+    way, and the credential expires within the hour regardless.
+    """
+    try:
+        iam = account_manager.create_cross_account_client(account_id, 'iam')
+        iam.delete_role_policy(
+            RoleName=team_role.ROLE_NAME,
+            PolicyName=team_role.GAME_POLICY_NAME,
+        )
+        print(f"Revoked console permissions in {account_id}")
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchEntity':
+            return
+        print(f"Could not revoke console permissions in {account_id}: {e}")
+    except Exception as e:
+        print(f"Could not revoke console permissions in {account_id}: {e}")
 
 
 def _result(outcome, account_id=None, build_id=None, error=None):
@@ -75,6 +104,10 @@ def end_session(sessions_table, session, account_manager, reason=None):
     if not account_manager.mark_cleaning(account_id):
         print(f"Account {account_id} was not IN_USE, skipping cleanup build")
         return _result(SKIPPED, account_id)
+
+    # Only now: before the hold, the account could still belong to someone
+    # else, and taking their permissions away would be the wrong account.
+    _revoke_console_access(account_manager, account_id)
 
     try:
         build = boto3.client('codebuild').start_build(

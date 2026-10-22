@@ -155,6 +155,80 @@ def test_an_account_that_is_not_in_use_is_left_alone(
     assert stored(sessions_table)['active'] is False
 
 
+def test_ending_a_session_takes_the_players_permissions_away(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, monkeypatch
+):
+    """
+    A console session the player opened lives up to an hour, and the account
+    is about to be wiped underneath them. Dropping GamePolicy leaves only the
+    deny-everything guardrails, so an open tab goes dead immediately.
+    """
+    import boto3
+    import account_manager
+    import team_role
+
+    monkeypatch.setattr(
+        account_manager.AccountManager, 'create_cross_account_client',
+        lambda self, account_id, service_name: boto3.client(service_name)
+    )
+    iam = boto3.client('iam')
+    team_role.ensure_team_role(iam, '673000199571')
+    team_role.put_game_policy(iam, team_role.DEFAULT_GAME_POLICY)
+
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+    teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    assert iam.list_role_policies(
+        RoleName=team_role.ROLE_NAME
+    )['PolicyNames'] == [team_role.GUARDRAIL_POLICY_NAME]
+
+
+def test_an_account_someone_else_now_holds_keeps_its_permissions(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, monkeypatch
+):
+    import boto3
+    import account_manager
+    import team_role
+
+    monkeypatch.setattr(
+        account_manager.AccountManager, 'create_cross_account_client',
+        lambda self, account_id, service_name: boto3.client(service_name)
+    )
+    iam = boto3.client('iam')
+    team_role.ensure_team_role(iam, '673000199571')
+    team_role.put_game_policy(iam, team_role.DEFAULT_GAME_POLICY)
+
+    # Not IN_USE: this account is not ours to touch, and the player working
+    # in it right now is someone else.
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'AVAILABLE'})
+    teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    assert team_role.GAME_POLICY_NAME in iam.list_role_policies(
+        RoleName=team_role.ROLE_NAME
+    )['PolicyNames']
+
+
+def test_a_revocation_that_fails_does_not_stop_the_wipe(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, monkeypatch
+):
+    import account_manager
+
+    def unreachable(self, account_id, service_name):
+        raise RuntimeError('cannot get into the account')
+
+    monkeypatch.setattr(
+        account_manager.AccountManager, 'create_cross_account_client', unreachable
+    )
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+
+    result = teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    # The wipe is what matters, and the credential expires within the hour
+    # anyway.
+    assert result['outcome'] == teardown.STARTED
+    assert account(accounts_table)['status'] == 'CLEANING'
+
+
 def test_an_account_whose_build_will_not_start_is_quarantined(
     sessions_table, accounts_table, manager, teardown, monkeypatch, verified_sender
 ):

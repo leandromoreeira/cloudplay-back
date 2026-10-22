@@ -245,6 +245,14 @@ class AccountManager:
             print(f"Failed to assume role {role_arn}: {e}")
             raise
 
+    def get_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+        """The pool entry for one account, or None if it isn't in the pool."""
+        try:
+            return self.table.get_item(Key={'account_id': account_id}).get('Item')
+        except ClientError as e:
+            print(f"Error reading account {account_id}: {e}")
+            return None
+
     def orchestrator_account_id(self) -> str:
         """The account the Lambdas run in, i.e. who the team role must trust."""
         return self.sts_client.get_caller_identity()['Account']

@@ -39,6 +39,14 @@ Parameters:
       Role the orchestrator assumes in accounts vended by manage_accounts.py.
       Must match the role name in org/organization.yaml.
 
+  PlayerRoleName:
+    Type: String
+    Default: HengHaTeamRole
+    Description: >
+      Role players are signed in to their game account as. Must match
+      ROLE_NAME in layers/utils-layer/team_role.py and PlayerRoleName in
+      org/organization.yaml.
+
   AlertEmail:
     Type: String
     Default: leandro.lx3@gmail.com
@@ -309,6 +317,13 @@ Resources:
             - Effect: Allow
               Action: ses:SendEmail
               Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -564,6 +579,13 @@ Resources:
             - Effect: Allow
               Action: ses:SendEmail
               Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:
@@ -574,6 +596,52 @@ Resources:
             # and 30 minutes past it, which is close enough for a 3h cap.
             Schedule: rate(30 minutes)
             Description: Expire game sessions that outlived MaxSessionHours
+
+  # Cognito says who the caller is; this says whether they still hold the
+  # account, and only then trades that for a console session. Sessions last
+  # an hour: assuming a role from a Lambda is role chaining, which AWS caps
+  # there. The console sends the player to FRONTEND_URL/reconnect when it
+  # expires, and that page asks for a fresh URL.
+  ConsoleAccessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/console_access/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Environment:
+        Variables:
+          FRONTEND_URL: !Sub "https://${CloudFrontDistribution.DomainName}"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccountsTable
+        - Version: "2012-10-17"
+          Statement:
+            # The player's role, not the orchestrator's: this session is the
+            # person, and CloudTrail in the game account records it as them.
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::*:role/${PlayerRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /games/{gameId}/console
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   RestApi:
     Type: AWS::Serverless::Api
