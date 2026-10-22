@@ -1,3 +1,6 @@
 pytest
 boto3
+# Unit tests: AWS mocked in-process.
+moto[dynamodb,ses,codebuild,sts]
+# Integration tests only, which call a deployed API over the wire.
 requests

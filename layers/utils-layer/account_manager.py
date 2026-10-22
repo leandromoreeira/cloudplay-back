@@ -24,6 +24,11 @@ from typing import Optional, List, Dict, Any
 
 DEFAULT_ROLE_NAME = "CloudPlayGameRole"
 
+# Where to send the "an account just left the pool" mail. Same address on both
+# ends on purpose: SES in the sandbox only talks between verified identities,
+# and one verification then covers sender and recipient alike.
+ALERT_EMAIL_ENV = "ALERT_EMAIL"
+
 STATUS_AVAILABLE = "AVAILABLE"
 STATUS_IN_USE = "IN_USE"
 STATUS_CLEANING = "CLEANING"
@@ -126,10 +131,48 @@ class AccountManager:
                     ':now': _now(),
                 }
             )
-            return True
         except ClientError as e:
             print(f"Error quarantining account {account_id}: {e}")
             return False
+
+        self._notify_quarantine(account_id, reason)
+        return True
+
+    def _notify_quarantine(self, account_id: str, reason: str) -> None:
+        """
+        Tell a human that an account just dropped out of the pool.
+
+        A pool of three quietly becoming a pool of two is exactly the failure
+        this alert exists to catch, but it must never be the reason the state
+        change fails: the account really is quarantined either way, so every
+        error here is swallowed and logged.
+        """
+        address = os.environ.get(ALERT_EMAIL_ENV)
+        if not address:
+            print(f"{ALERT_EMAIL_ENV} is unset, not sending the quarantine alert")
+            return
+
+        body = (
+            f"Account {account_id} was quarantined and is no longer in the pool.\n\n"
+            f"Reason: {reason}\n\n"
+            f"It will not serve another game session until someone puts it back:\n"
+            f"  python scripts/manage_accounts.py set-status "
+            f"--account-id {account_id} --status AVAILABLE\n\n"
+            f"Check what the cleanup build left behind before doing that."
+        )
+
+        try:
+            boto3.client('ses').send_email(
+                Source=address,
+                Destination={'ToAddresses': [address]},
+                Message={
+                    'Subject': {'Data': f"[CloudPlay] Account {account_id} quarantined"},
+                    'Body': {'Text': {'Data': body}},
+                }
+            )
+            print(f"Quarantine alert for {account_id} sent to {address}")
+        except Exception as e:
+            print(f"Could not send the quarantine alert for {account_id}: {e}")
 
     def _transition(self, account_id: str, new_status: str, allowed_from: List[str]) -> bool:
         placeholders = {f':from{i}': status for i, status in enumerate(allowed_from)}
@@ -202,6 +245,31 @@ class AccountManager:
             print(f"Failed to assume role {role_arn}: {e}")
             raise
 
+    def orchestrator_account_id(self) -> str:
+        """The account the Lambdas run in, i.e. who the team role must trust."""
+        return self.sts_client.get_caller_identity()['Account']
+
+    def create_cross_account_client(self, account_id: str, service_name: str):
+        """
+        Create a boto3 client for any service inside a game account.
+
+        Args:
+            account_id: Target AWS account ID
+            service_name: e.g. 'cloudformation', 'iam'
+
+        Returns:
+            A boto3 client authenticated into the target account
+        """
+        credentials = self.assume_cross_account_role(account_id)
+
+        return boto3.client(
+            service_name,
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken'],
+            region_name=os.environ.get('AWS_REGION', 'us-east-1')
+        )
+
     def create_cross_account_clients(self, account_id: str):
         """
         Create boto3 client for CloudFormation using cross-account credentials.
@@ -212,18 +280,7 @@ class AccountManager:
         Returns:
             CloudFormation client for the target account
         """
-        credentials = self.assume_cross_account_role(account_id)
-
-        # Create CloudFormation client with temporary credentials
-        cf_client = boto3.client(
-            'cloudformation',
-            aws_access_key_id=credentials['AccessKeyId'],
-            aws_secret_access_key=credentials['SecretAccessKey'],
-            aws_session_token=credentials['SessionToken'],
-            region_name=os.environ.get('AWS_REGION', 'us-east-1')
-        )
-
-        return cf_client
+        return self.create_cross_account_client(account_id, 'cloudformation')
 
     def get_account_status(self) -> List[Dict[str, Any]]:
         """

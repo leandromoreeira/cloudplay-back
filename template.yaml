@@ -16,6 +16,7 @@ Globals:
         GAME_ACCESS_TABLE: !Ref GameAccessTable
         GAME_ACCOUNTS_TABLE: !Ref GameAccountsTable
         S3_BUCKET_NAME: !Ref S3BucketName
+        ALERT_EMAIL: !Ref AlertEmail
 
 Parameters:
   S3BucketName:
@@ -37,6 +38,23 @@ Parameters:
     Description: >
       Role the orchestrator assumes in accounts vended by manage_accounts.py.
       Must match the role name in org/organization.yaml.
+
+  AlertEmail:
+    Type: String
+    Default: leandro.lx3@gmail.com
+    Description: >
+      Where to send the alert when an account falls out of the pool. It is both
+      sender and recipient: SES in the sandbox only delivers between verified
+      identities, so one verification covers both ends.
+
+  MaxSessionHours:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: >
+      How long a session may hold an account before the janitor tears it down.
+      A player who closes the tab never ends their session, and an abandoned
+      session is an account permanently out of the pool.
 
 Resources:
 
@@ -111,6 +129,14 @@ Resources:
         - AttributeName: "account_id"
           KeyType: "HASH"
       BillingMode: PAY_PER_REQUEST
+
+  # Creating this sends a verification mail to the address. Until someone
+  # clicks it, SES refuses to send and the quarantine alert only reaches the
+  # Lambda's log. The state change itself is unaffected.
+  AlertEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref AlertEmail
 
   GameAccessTable:
     Type: AWS::DynamoDB::Table
@@ -280,6 +306,9 @@ Resources:
             - Effect: Allow
               Action: codebuild:StartBuild
               Resource: !GetAtt AccountCleanupProject.Arn
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
       Architectures:
         - x86_64
       Events:
@@ -479,6 +508,11 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameAccountsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
       Architectures:
         - x86_64
       Events:
@@ -498,6 +532,48 @@ Resources:
                   - FAILED
                   - STOPPED
                   - TIMED_OUT
+
+  # Nothing ends a session when a player just closes the tab, and an account
+  # held by an abandoned session never comes back on its own. This sweeps them
+  # through exactly the same teardown the player's "end" button triggers.
+  SessionJanitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/session_janitor/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      # A sweep can start several builds in a row, which the 30s default in
+      # Globals is too tight for.
+      Timeout: 120
+      Layers:
+        - !Ref UtilsLayer
+      Environment:
+        Variables:
+          CLEANUP_PROJECT_NAME: !Ref AccountCleanupProject
+          MAX_SESSION_HOURS: !Sub "${MaxSessionHours}"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccountsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: codebuild:StartBuild
+              Resource: !GetAtt AccountCleanupProject.Arn
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
+      Architectures:
+        - x86_64
+      Events:
+        Sweep:
+          Type: Schedule
+          Properties:
+            # A session therefore lives somewhere between MaxSessionHours
+            # and 30 minutes past it, which is close enough for a 3h cap.
+            Schedule: rate(30 minutes)
+            Description: Expire game sessions that outlived MaxSessionHours
 
   RestApi:
     Type: AWS::Serverless::Api
