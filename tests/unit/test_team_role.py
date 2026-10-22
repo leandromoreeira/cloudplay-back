@@ -7,6 +7,7 @@ get allow-everything — are still fenced in.
 """
 
 import json
+import re
 
 import pytest
 
@@ -38,6 +39,27 @@ def statement(document, sid):
         if item.get('Sid') == sid:
             return item
     raise AssertionError(f"no statement {sid} in {[s.get('Sid') for s in document['Statement']]}")
+
+
+# --- room to grow -----------------------------------------------------------
+
+def test_the_guardrails_leave_room_for_the_biggest_game_policy(team_role):
+    """
+    A role's inline policies share a budget of 10240 characters, whitespace
+    not counted, and the guardrails spend part of it in every account. Growing
+    them takes room away from what a game is allowed to ask for.
+
+    The largest iam.json in the catalogue is game94's, at 5982 characters.
+    """
+    limit = 10240
+    largest_game_policy = 5982
+
+    guardrails = len(re.sub(r'\s', '', json.dumps(team_role.guardrail_policy())))
+
+    assert guardrails + largest_game_policy <= limit, (
+        f"guardrails are {guardrails} chars, which leaves "
+        f"{limit - guardrails} for a game that may need {largest_game_policy}"
+    )
 
 
 # --- creating the role ------------------------------------------------------

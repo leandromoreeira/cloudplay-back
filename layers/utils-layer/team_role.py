@@ -181,7 +181,12 @@ def _trust_policy(trusted_account):
 
 
 def _compact(document):
-    """IAM caps an inline policy at 10240 characters; don't spend them on whitespace."""
+    """
+    Smaller request payloads, nothing more.
+
+    IAM ignores whitespace when it measures a policy, so this buys no room
+    against the 10240 characters a role's inline policies share.
+    """
     return json.dumps(document, separators=(',', ':'))
 
 
