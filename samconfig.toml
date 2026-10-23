@@ -8,6 +8,7 @@ stack_name = "aws-jam"
 [default.build.parameters]
 cached = true
 parallel = true
+profile="personal"
 
 [default.validate.parameters]
 lint = true
@@ -19,6 +20,7 @@ resolve_s3 = true
 s3_prefix = "aws-jam"
 region = "us-east-1"
 image_repositories = []
+profile="personal"
 
 [default.package.parameters]
 resolve_s3 = true
