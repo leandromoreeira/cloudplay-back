@@ -51,9 +51,30 @@ Parameters:
     Type: String
     Default: leandro.lx3@gmail.com
     Description: >
-      Where to send the alert when an account falls out of the pool. It is both
-      sender and recipient: SES in the sandbox only delivers between verified
-      identities, so one verification covers both ends.
+      Where the alert goes when an account falls out of the pool, and the SES
+      identity it is sent from. Sender and recipient are the same address on
+      purpose: SES in the sandbox only delivers between verified identities,
+      so one verification covers both ends. Cognito does not use this — it
+      sends invitations and password resets with its own sender.
+
+  SessionHours:
+    Type: Number
+    Default: 24
+    MinValue: 1
+    MaxValue: 720
+    Description: >
+      How long a sign-in lasts before the player has to authenticate again,
+      second factor included. This is the refresh token's lifetime; the access
+      and ID tokens keep the usual hour and are renewed from it.
+
+  MfaEnforcement:
+    Type: String
+    Default: "ON"
+    AllowedValues: ["OFF", "OPTIONAL", "ON"]
+    Description: >
+      An authenticator app is the only second factor enabled. With this ON,
+      a user who has not enrolled one is walked through enrolling it on their
+      next sign-in.
 
   MaxSessionHours:
     Type: Number
@@ -739,6 +760,22 @@ Resources:
       AutoVerifiedAttributes:
         - email
 
+      # Email is free to be the way back in when a password is lost, because
+      # the second factor below is an authenticator app and not the mailbox.
+      # Cognito's own sender handles these, so the pool needs no SES identity
+      # and is not held back by the SES sandbox.
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+      # An authenticator app, deliberately not email: a code in a mailbox is
+      # only as strong as the mailbox, and sending it would have meant SES
+      # production access and a domain we do not have.
+      MfaConfiguration: !Ref MfaEnforcement
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+
   FullAccessUserGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
@@ -755,6 +792,16 @@ Resources:
       ExplicitAuthFlows:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+      # The refresh token is what decides how long a sign-in survives: once it
+      # expires the player authenticates again, second factor included. The
+      # short-lived tokens are renewed from it in the meantime.
+      RefreshTokenValidity: !Ref SessionHours
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      TokenValidityUnits:
+        RefreshToken: hours
+        AccessToken: hours
+        IdToken: hours
 
 Outputs:
   GamesApi:
