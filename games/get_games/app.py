@@ -21,7 +21,6 @@ def lambda_handler(event, context):
     category = query_params.get('category')
     difficulty = query_params.get('difficulty')
     order = query_params.get('order', 'desc').lower()  # Default to desc
-    exclude_chinese = query_params.get('excludeChinese', 'true').lower() == 'true'  # Default to exclude
 
     scan_kwargs = {}
     filter_expression = []
@@ -51,28 +50,6 @@ def lambda_handler(event, context):
         # access to, unless they're in the full-access group (None = no restriction)
         if accessible_game_ids is not None:
             items = [item for item in items if item.get('id') in accessible_game_ids]
-
-        # Filter out games that contain Chinese characters
-        def contains_chinese(text):
-            """Check if text contains Chinese characters"""
-            if not text:
-                return False
-            # Chinese characters Unicode range: U+4E00-U+9FFF
-            chinese_pattern = re.compile(r'[\u4e00-\u9fff]+')
-            return bool(chinese_pattern.search(str(text)))
-
-        # Filter out games with Chinese content in title or content (if enabled)
-        if exclude_chinese:
-            filtered_items = []
-            for item in items:
-                title = item.get('title', '')
-                content = item.get('content', '')
-
-                # Skip games that have Chinese in title or content
-                if not contains_chinese(title) and not contains_chinese(content):
-                    filtered_items.append(item)
-
-            items = filtered_items
 
         # Sort items by ID with numeric sorting for game IDs
         def sort_key(item):
