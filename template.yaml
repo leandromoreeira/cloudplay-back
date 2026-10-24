@@ -85,6 +85,15 @@ Parameters:
       A player who closes the tab never ends their session, and an abandoned
       session is an account permanently out of the pool.
 
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: >
+      How long CloudWatch keeps this stack's logs. A log group created by
+      Lambda on its own never expires, so without the groups declared below
+      every invocation is billed storage forever against a 100 USD budget.
+
 Resources:
 
   UtilsLayer:
@@ -671,6 +680,83 @@ Resources:
             RestApiId: !Ref RestApi
             Auth:
               Authorizer: CognitoAuthorizer
+
+# --- Log retention ----------------------------------------------------------
+# Lambda and CodeBuild create their own log groups on first write, with no
+# expiry. Declaring them here is the only way to put a retention on them, and
+# naming each one after its function (!Sub on the logical id resolves to the
+# generated function name) keeps every function's logs in their own group.
+#
+# A group that already exists is not imported: CloudFormation fails the
+# create. If a deploy stops on one, delete that group and deploy again.
+
+  GetGamesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetGamesFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  GetGameByIdLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetGameByIdFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  GetGameSessionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetGameSessionFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  StartGameSessionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StartGameSessionFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  EndGameSessionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${EndGameSessionFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  SubmitTaskAnswerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SubmitTaskAnswerFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  GetAccountStatusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GetAccountStatusFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  CleanupResultLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CleanupResultFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  SessionJanitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SessionJanitorFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ConsoleAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ConsoleAccessFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # The cleanup build names itself, so this group is named the same way
+  # CodeBuild would have named it.
+  AccountCleanupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/${AWS::StackName}-account-cleanup"
+      RetentionInDays: !Ref LogRetentionDays
 
   RestApi:
     Type: AWS::Serverless::Api
