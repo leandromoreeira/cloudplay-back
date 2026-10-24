@@ -274,16 +274,24 @@ def test_cloudformation_is_asked_to_start_before_the_build(
     assert stack_deletes.deletes[0]['StackName'] == 'game-session-s-1'
 
 
-def test_the_delete_is_told_to_force_its_way_through(
+def test_the_delete_asks_for_nothing_but_the_stack(
     sessions_table, accounts_table, manager, teardown, cleanup_project, stack_deletes
 ):
-    # Does nothing while the delete goes normally, and takes over if the
-    # stack gets stuck — which is the only case worth asking about.
+    """
+    CloudFormation rejects the forceful options on a healthy stack:
+
+        "You can activate DeletionMode FORCE_DELETE_STACK in a delete
+         stack operation only when the stack is in the DELETE_FAILED
+         state."
+
+    Sending one is not a harmless extra — it fails the whole call, which
+    is how this was found.
+    """
     accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
 
     teardown.end_session(sessions_table, a_session(sessions_table), manager)
 
-    assert stack_deletes.deletes[0]['DeletionMode'] == 'FORCE_DELETE_STACK'
+    assert set(stack_deletes.deletes[0]) == {'StackName'}
 
 
 def test_an_account_someone_else_holds_keeps_its_stack(

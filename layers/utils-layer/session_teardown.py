@@ -63,21 +63,21 @@ def _delete_lab_stack(account_manager, account_id, session_id):
     call. Starting the clock here means that minute overlaps instead of
     queueing behind.
 
-    FORCE_DELETE_STACK is the only forceful option that can be passed up
-    front. It does nothing while a delete is going normally and takes effect
-    if the stack gets stuck, which is exactly when it is wanted. The other
-    one, RetainResources, is documented as DELETE_FAILED-only and needs the
-    logical IDs of whatever refused to go, so it cannot be guessed here —
-    aws-nuke already retries that way once a stack reaches DELETE_FAILED.
+    StackName is the only parameter worth sending, which took being told:
+
+        "You can activate DeletionMode FORCE_DELETE_STACK in a delete stack
+         operation only when the stack is in the DELETE_FAILED state."
+
+    So neither forceful option can be used on a healthy stack. RetainResources
+    is DELETE_FAILED-only too, and needs the logical IDs of whatever refused
+    to go. Both belong to a second attempt after a stack sticks, and aws-nuke
+    already makes exactly that attempt.
     """
     try:
         cloudformation = account_manager.create_cross_account_client(
             account_id, 'cloudformation'
         )
-        cloudformation.delete_stack(
-            StackName=f'game-session-{session_id}',
-            DeletionMode='FORCE_DELETE_STACK',
-        )
+        cloudformation.delete_stack(StackName=f'game-session-{session_id}')
         print(f"Asked CloudFormation to delete game-session-{session_id}")
     except ClientError as e:
         print(f"Could not start the stack delete in {account_id}: {e}")
