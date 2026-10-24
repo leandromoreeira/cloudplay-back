@@ -26,7 +26,7 @@ conferir o nuke, emergências de MFA) estão em **`docs/RUNBOOK.md`**.
 | Sessões de jogo | DynamoDB `aws-jam-Game-Sessions` |
 | Pool de contas e seu estado | DynamoDB `aws-jam-Game-Accounts` |
 | Quem pode jogar o quê | DynamoDB `aws-jam-Game-Access` + grupo Cognito `full-access` |
-| Templates, validators, artefatos | S3 `cloudraiser-673000199571` |
+| Templates, validators, artefatos | S3 `cloudraiser-673000199571`, publicados pelo `tools/sync_s3.sh` do repo de games — **não há script de upload aqui** |
 | Infra da aplicação | Stack SAM `aws-jam` (`template.yaml`) |
 | Governança: OU, SCPs, budget | Stack `cloudplay-org` (`org/organization.yaml`), **deploy manual** |
 
@@ -148,6 +148,20 @@ Budget único de 100 USD/mês no consolidado da organização; em 150 USD o AWS
 Budgets anexa uma SCP de freeze na OU dos games. Não há budget por conta: o que
 importa é o total.
 
+O bucket de artefatos **não é gerenciado por código** — nem aqui nem no repo de
+games. Existe desde 2019 e sua configuração é mantida à mão:
+
+- versionamento ligado, com lifecycle mantendo **3 versões** de cada arquivo (a
+  atual mais duas) e apagando delete markers órfãos. Com versionamento, um
+  `s3 sync --delete` cria marker em vez de apagar — a mesma regra limpa isso;
+- a bucket policy libera leitura para a organização, mantém anônimo só o que o
+  aluno e o runtime precisam baixar, e nega não-TLS. **O contrato dela está
+  documentado no `CLAUDE.md` do repo de games** — leia antes de mexer.
+
+`put_bucket_policy` substitui a policy inteira. Nunca rode um script que a
+escreva sem ler o que ele escreve: foi por isso que o `setup_s3_bucket.py`
+daqui foi apagado.
+
 ## Testes
 
 ```bash
@@ -208,9 +222,6 @@ Não "conserte" estas sem ler o motivo:
 
 ## Pendências conhecidas
 
-- Versionamento desligado no bucket de artefatos.
-- `scripts/upload_game_templates.py` está quebrado: aponta para
-  `back/cloudraiser-games`, que não existe.
 - `README.md` deste repo é boilerplate do SAM com partes desatualizadas.
 - Uma conta pode ficar `IN_USE` sem sessão se a Lambda de start morrer entre
   reivindicar e gravar; o janitor varre sessões e não enxerga esse caso.
