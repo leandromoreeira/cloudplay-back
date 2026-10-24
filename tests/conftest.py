@@ -81,15 +81,23 @@ def sessions_table(aws, monkeypatch):
             {'AttributeName': 'session_id', 'AttributeType': 'S'},
             {'AttributeName': 'user_name', 'AttributeType': 'S'},
             {'AttributeName': 'game_id', 'AttributeType': 'S'},
+            {'AttributeName': 'account_id', 'AttributeType': 'S'},
         ],
-        GlobalSecondaryIndexes=[{
-            'IndexName': 'user_game_index',
-            'KeySchema': [
-                {'AttributeName': 'user_name', 'KeyType': 'HASH'},
-                {'AttributeName': 'game_id', 'KeyType': 'RANGE'},
-            ],
-            'Projection': {'ProjectionType': 'ALL'},
-        }],
+        GlobalSecondaryIndexes=[
+            {
+                'IndexName': 'user_game_index',
+                'KeySchema': [
+                    {'AttributeName': 'user_name', 'KeyType': 'HASH'},
+                    {'AttributeName': 'game_id', 'KeyType': 'RANGE'},
+                ],
+                'Projection': {'ProjectionType': 'ALL'},
+            },
+            {
+                'IndexName': 'account_index',
+                'KeySchema': [{'AttributeName': 'account_id', 'KeyType': 'HASH'}],
+                'Projection': {'ProjectionType': 'ALL'},
+            },
+        ],
         BillingMode='PAY_PER_REQUEST',
     )
     return dynamodb.Table(SESSIONS_TABLE)

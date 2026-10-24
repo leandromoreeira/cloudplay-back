@@ -136,6 +136,8 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        # Used by the cleanup result handler to find the session a finished
+        # build belongs to, which it only knows by account.
         - IndexName: account_index
           KeySchema:
             - AttributeName: account_id
@@ -372,6 +374,10 @@ Resources:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
             TableName: !Ref GameAccessTable
+        # Which role to assume is stored per account. Without this the lookup
+        # fails and every validation silently falls back to the default name.
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccountsTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
@@ -544,6 +550,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameAccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow

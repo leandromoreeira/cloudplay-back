@@ -110,7 +110,10 @@ class AccountManager:
         return self._transition(
             account_id,
             new_status=STATUS_AVAILABLE,
-            allowed_from=[STATUS_CLEANING, STATUS_IN_USE]
+            allowed_from=[STATUS_CLEANING, STATUS_IN_USE],
+            # Nobody holds it any more. Leaving the old id behind makes a free
+            # account read as if something still had it.
+            clear_session=True
         )
 
     def mark_quarantined(self, account_id: str, reason: str) -> bool:
@@ -174,7 +177,8 @@ class AccountManager:
         except Exception as e:
             print(f"Could not send the quarantine alert for {account_id}: {e}")
 
-    def _transition(self, account_id: str, new_status: str, allowed_from: List[str]) -> bool:
+    def _transition(self, account_id: str, new_status: str, allowed_from: List[str],
+                    clear_session: bool = False) -> bool:
         placeholders = {f':from{i}': status for i, status in enumerate(allowed_from)}
         condition = '#status IN ({})'.format(', '.join(placeholders))
 
@@ -184,10 +188,14 @@ class AccountManager:
         }
         expression_values.update(placeholders)
 
+        update = 'SET #status = :status, updated_at = :now'
+        if clear_session:
+            update += ' REMOVE session_id'
+
         try:
             self.table.update_item(
                 Key={'account_id': account_id},
-                UpdateExpression='SET #status = :status, updated_at = :now',
+                UpdateExpression=update,
                 ConditionExpression=condition,
                 ExpressionAttributeNames={'#status': 'status'},
                 ExpressionAttributeValues=expression_values

@@ -101,6 +101,25 @@ def test_available_from_cleaning_or_in_use(accounts_table, manager, status):
     assert status_of(accounts_table, ACCOUNT_A) == 'AVAILABLE'
 
 
+def test_releasing_an_account_forgets_whose_it_was(accounts_table, manager):
+    put(accounts_table, ACCOUNT_A, 'CLEANING', session_id='session-1')
+
+    manager.mark_available(ACCOUNT_A)
+
+    # A free account carrying a session id reads as if something still held
+    # it, which is the first thing anyone checks when the pool looks wrong.
+    assert 'session_id' not in item(accounts_table, ACCOUNT_A)
+
+
+def test_taking_an_account_for_teardown_keeps_whose_it_was(accounts_table, manager):
+    put(accounts_table, ACCOUNT_A, 'IN_USE', session_id='session-1')
+
+    manager.mark_cleaning(ACCOUNT_A)
+
+    # Still needed: this is what says which session the wipe belongs to.
+    assert item(accounts_table, ACCOUNT_A)['session_id'] == 'session-1'
+
+
 def test_a_quarantined_account_never_drifts_back_into_the_pool(accounts_table, manager):
     put(accounts_table, ACCOUNT_A, 'QUARANTINED', failure_reason='nuke failed')
 
