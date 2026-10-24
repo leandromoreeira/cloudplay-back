@@ -59,7 +59,7 @@ Parameters:
 
   SessionHours:
     Type: Number
-    Default: 24
+    Default: 8
     MinValue: 1
     MaxValue: 720
     Description: >
