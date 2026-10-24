@@ -11,8 +11,12 @@ This project contains source code and supporting files for a serverless gaming p
 - **Scalability**: Easy addition of more accounts as demand grows
 
 ### Configured Accounts
-- **Account 1**: `021914682333`
-- **Account 2**: `339105149717`
+
+The pool is data, not documentation: it lives in the DynamoDB table
+`aws-jam-Game-Accounts`. List it with `python scripts/manage_accounts.py list`.
+
+See `CLAUDE.md` for how the pool, the cleanup and the governance stack fit
+together. The rest of this file is SAM CLI boilerplate.
 
 
 ## 📁 Project Structure
