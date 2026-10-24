@@ -129,9 +129,10 @@ def test_a_player_holding_their_account_gets_a_url(handler, sessions_table, acco
     body = body_of(response)
 
     assert response['statusCode'] == 200
-    assert body['accountId'] == ACCOUNT_A
     assert body['expiresAt'] == EXPIRES.isoformat()
     assert body['consoleUrl'].startswith('https://signin.example/')
+    # The account the game runs in is not the player's business.
+    assert 'accountId' not in body
 
 
 def test_the_console_is_told_where_to_send_them_when_the_hour_is_up(

@@ -90,9 +90,10 @@ def lambda_handler(event, context):
         print(f"Console session for {user_name} in {account_id}, "
               f"expires {credentials['Expiration'].isoformat()}")
 
+        # expiresAt stays: it is when this console session dies and the
+        # player gets bounced to /reconnect, which the page needs to know.
         return _response(200, {
             'consoleUrl': url,
-            'accountId': account_id,
             'expiresAt': credentials['Expiration'].isoformat()
         })
 

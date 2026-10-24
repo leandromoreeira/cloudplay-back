@@ -12,32 +12,49 @@ from access_control import get_identity, can_access_game
 
 AWS_REGION = os.environ['AWS_REGION']
 
+# The session exists from the first moment, before an account is claimed and
+# long before CloudFormation has been asked for anything. That is the whole
+# point: the "already in progress" check above can only see a row that is
+# already there, and waiting for the stack left a window wide enough for a
+# second click to walk through and take another account.
+STATUS_STARTING = 'STARTING'
+
+
+def _response(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        },
+        'body': json.dumps(body)
+    }
+
+
+def _abandon(table, session_id, account_manager=None, account_id=None):
+    """Undo a start that never got off the ground."""
+    if account_id:
+        account_manager.mark_available(account_id)
+
+    try:
+        table.delete_item(Key={'session_id': session_id})
+    except ClientError as e:
+        print(f"Could not drop the abandoned session {session_id}: {e}")
+
+
 def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
     user_name, groups = get_identity(event)
 
     if not user_name:
-        return {
-            'statusCode': 401,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({'message': 'Invalid or expired token'})
-        }
+        return _response(401, {'message': 'Invalid or expired token'})
 
     if not can_access_game(user_name, groups, game_id):
-        return {
-            'statusCode': 403,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({'message': 'You do not have access to this game'})
-        }
+        return _response(403, {'message': 'You do not have access to this game'})
 
     # Initialize account manager
     account_manager = get_account_manager()
+    session_id = str(uuid.uuid4())
 
     try:
         dynamodb = boto3.resource('dynamodb')
@@ -56,59 +73,53 @@ def lambda_handler(event, context):
         )
 
         if response['Items']:
-            return {
-                'statusCode': 400,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({'message': 'You already have this game in progress'})
-            }
+            return _response(400, {'message': 'You already have this game in progress'})
 
+        table.put_item(
+            Item={
+                'session_id': session_id,
+                'user_name': user_name,
+                'game_id': game_id,
+                'start_time': datetime.utcnow().isoformat() + 'Z',
+                'active': True,
+                'end_time': None,
+                'stack_status': STATUS_STARTING,
+                'stack_outputs': {}
+            }
+        )
+    except ClientError as e:
+        print(f"Error starting the session: {e}")
+        return _response(500, {
+            'error': 'Could not start the game session.',
+            'details': e.response['Error']['Message'],
+        })
+
+    try:
         # Claim an account for this session. The claim is atomic, so concurrent
         # starts can't be handed the same account.
-        session_id = str(uuid.uuid4())
         selected_account = account_manager.claim_account(session_id)
         if not selected_account:
-            return {
-                'statusCode': 503,  # Service Unavailable
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({
-                    'message': 'All game environments are currently busy. Please try again later.',
-                    'error_code': 'NO_AVAILABLE_ACCOUNTS'
-                })
-            }
+            _abandon(table, session_id)
+            return _response(503, {
+                'message': 'All game environments are currently busy. Please try again later.',
+                'error_code': 'NO_AVAILABLE_ACCOUNTS'
+            })
 
+        # Recorded straight away, so that a crash from here on leaves a session
+        # the janitor can find the account through.
+        table.update_item(
+            Key={'session_id': session_id},
+            UpdateExpression='SET account_id = :account_id',
+            ExpressionAttributeValues={':account_id': selected_account}
+        )
         print(f"Selected account {selected_account} for game deployment")
-
     except ClientError as e:
-        print(f"Error querying DynamoDB: {e}")
-        return {
-            "statusCode": 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            "body": json.dumps(
-                {
-                    "error": "Could not retrieve game status.",
-                    "details": e.response["Error"]["Message"],
-                }
-            ),
-        }
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return {
-            "statusCode": 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            "body": json.dumps({"error": "An unexpected error occurred."}),
-        }
+        print(f"Error claiming an account: {e}")
+        _abandon(table, session_id)
+        return _response(500, {
+            'error': 'Could not reserve an environment for this game.',
+            'details': e.response['Error']['Message'],
+        })
 
     stack_name = f'game-session-{session_id}'
     bucket_name = os.environ['S3_BUCKET_NAME']
@@ -119,9 +130,7 @@ def lambda_handler(event, context):
 
     try:
         # The player's role is set up before the lab is, so that nothing can
-        # ever hand out a session you cannot log into. Doing it first also
-        # means a failure here leaves the account untouched and the existing
-        # error path below can simply give it back to the pool.
+        # ever hand out a session you cannot log into.
         iam_client = account_manager.create_cross_account_client(selected_account, 'iam')
         team_role.ensure_team_role(iam_client, account_manager.orchestrator_account_id())
         team_role.put_game_policy(
@@ -136,7 +145,7 @@ def lambda_handler(event, context):
         print(f"Creating CloudFormation stack {stack_name} in account {selected_account} using template URL {template_url}")
 
         # Deploy to the selected cross-account using cross-account CloudFormation client
-        stack_response = cf_client.create_stack(
+        cf_client.create_stack(
             StackName=stack_name,
             TemplateURL=template_url,
             Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND']
@@ -146,67 +155,30 @@ def lambda_handler(event, context):
 
     except ClientError as e:
         # Nothing was deployed, so hand the account straight back to the pool
-        account_manager.mark_available(selected_account)
+        # and take the session with it.
+        _abandon(table, session_id, account_manager, selected_account)
 
         if e.response['Error']['Code'] == 'NoSuchKey':
             print(f"Error: Template not found at s3://{bucket_name}/{template_key}")
-            return {
-                "statusCode": 404,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                "body": json.dumps({"error": f"Game template for gameId {game_id} not found."}),
-            }
-        print(f"Error creating CloudFormation stack: {e}")
-        return {
-            "statusCode": 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            "body": json.dumps({
-                "error": "Could not create CloudFormation stack.",
-                "details": e.response["Error"]["Message"],
-            }),
-        }
-    except Exception as e:
-        account_manager.mark_available(selected_account)
-        print(f"An unexpected error occurred during deployment: {e}")
-        return {
-            "statusCode": 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            "body": json.dumps({"error": "An unexpected error occurred during deployment."}),
-        }
+            return _response(404, {'error': f'Game template for gameId {game_id} not found.'})
 
-    # Save session with account_id
-    table.put_item(
-        Item={
-            'session_id': session_id,
-            'user_name': user_name,
-            'game_id': game_id,
-            'account_id': selected_account,  # Store the account where game is deployed
-            'start_time': datetime.utcnow().isoformat() + 'Z',
-            'active': True,
-            'end_time': None,
-            'stack_status': 'CREATE_IN_PROGRESS',
-            'stack_outputs': {}  # Initialize empty outputs
-        }
+        print(f"Error creating CloudFormation stack: {e}")
+        return _response(500, {
+            'error': 'Could not create CloudFormation stack.',
+            'details': e.response['Error']['Message'],
+        })
+    except Exception as e:
+        _abandon(table, session_id, account_manager, selected_account)
+        print(f"An unexpected error occurred during deployment: {e}")
+        return _response(500, {'error': 'An unexpected error occurred during deployment.'})
+
+    table.update_item(
+        Key={'session_id': session_id},
+        UpdateExpression='SET stack_status = :status',
+        ExpressionAttributeValues={':status': 'CREATE_IN_PROGRESS'}
     )
 
-    return {
-        'statusCode': 200,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-        },
-        'body': json.dumps({
-            'message': message,
-            'stackId': stack_response['StackId'],
-            'sessionId': session_id,
-            'accountId': selected_account
-        })
-    }
+    return _response(200, {
+        'message': message,
+        'sessionId': session_id
+    })

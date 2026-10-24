@@ -72,7 +72,11 @@ def lambda_handler(event, context):
         stack_status = session.get('stack_status', 'UNKNOWN')
         stack_outputs = session.get('stack_outputs', {})
 
-        if session.get('active', False):
+        # A session that has not asked CloudFormation for anything yet has no
+        # stack to describe, and the ValidationError branch below would read
+        # that as a finished teardown and close the session out from under
+        # the player.
+        if session.get('active', False) and stack_status != 'STARTING':
             try:
                 # Use cross-account CloudFormation client if account_id is specified
                 if account_id:
@@ -151,14 +155,14 @@ def lambda_handler(event, context):
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'
             },
+            # Only what the player's screen actually needs. The account the
+            # game runs in is infrastructure, and the session id is ours.
             "body": json.dumps(
                 {
                     "active_session": session.get('active', False),
-                    "session_id": session["session_id"],
                     "start_time": session["start_time"],
                     "stack_status": stack_status,
                     "stack_outputs": stack_outputs,
-                    "account_id": account_id  # Include account_id in response
                 }
             ),
         }

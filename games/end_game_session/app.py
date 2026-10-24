@@ -60,15 +60,12 @@ def lambda_handler(event, context):
         if result['outcome'] == session_teardown.FAILED:
             return _response(500, {
                 'error': 'Session ended but account cleanup could not be started.',
-                'sessionId': session['session_id'],
-                'accountId': result['account_id']
+                'sessionId': session['session_id']
             })
 
         return _response(200, {
             'message': f'Game session {game_id} ended successfully',
-            'sessionId': session['session_id'],
-            'accountId': result['account_id'],
-            'cleanupBuildId': result['build_id']
+            'sessionId': session['session_id']
         })
 
     except ClientError as e:

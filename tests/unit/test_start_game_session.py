@@ -10,7 +10,7 @@ import json
 import pytest
 from botocore.exceptions import ClientError
 
-from tests.conftest import ACCOUNT_A, load_handler
+from tests.conftest import ACCOUNT_A, ACCOUNT_B, load_handler
 
 GAME_ID = 'game1'
 
@@ -18,17 +18,23 @@ GAME_ID = 'game1'
 class FakeCloudFormation:
     """Stands in for the game account's CloudFormation; moto would want to fetch the TemplateURL."""
 
-    def __init__(self):
+    def __init__(self, sessions_table=None):
         self.stacks = []
+        self.sessions_when_called = []
+        self._sessions_table = sessions_table
 
     def create_stack(self, **kwargs):
         self.stacks.append(kwargs)
+        # Snapshot of the sessions table at the moment the slow call starts,
+        # which is the window a second click used to arrive in.
+        if self._sessions_table is not None:
+            self.sessions_when_called.append(self._sessions_table.scan()['Items'])
         return {'StackId': f"arn:aws:cloudformation:us-east-1:1:stack/{kwargs['StackName']}/abc"}
 
 
 @pytest.fixture
-def cloudformation():
-    return FakeCloudFormation()
+def cloudformation(sessions_table):
+    return FakeCloudFormation(sessions_table)
 
 
 @pytest.fixture
@@ -126,6 +132,117 @@ def test_the_session_records_the_account_it_landed_in(handler, sessions_table):
     assert session['account_id'] == ACCOUNT_A
     assert session['active'] is True
     assert session['game_id'] == GAME_ID
+
+
+def test_the_session_exists_before_cloudformation_is_asked(
+    handler, accounts_table, cloudformation
+):
+    """
+    The fix for the triple-start, stated directly.
+
+    The session row used to be written only after CloudFormation accepted
+    the stack, so for those seconds the "already in progress" query had
+    nothing to find.
+    """
+    handler.lambda_handler(a_request(), None)
+
+    during = cloudformation.sessions_when_called[0]
+    assert len(during) == 1
+    assert during[0]['stack_status'] == 'STARTING'
+    assert during[0]['active'] is True
+
+
+def test_the_account_is_recorded_before_the_stack_exists(
+    handler, accounts_table, cloudformation
+):
+    # Otherwise a crash here leaves the account IN_USE with nothing pointing
+    # at it, and the janitor has no way to find it.
+    handler.lambda_handler(a_request(), None)
+
+    assert cloudformation.sessions_when_called[0][0]['account_id'] == ACCOUNT_A
+
+
+def test_an_empty_pool_leaves_no_session_behind(
+    handler, accounts_table, sessions_table, cloudformation
+):
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+
+    response = handler.lambda_handler(a_request(), None)
+
+    assert response['statusCode'] == 503
+    assert sessions_table.scan()['Items'] == []
+    assert cloudformation.stacks == []
+
+
+def test_a_second_click_does_not_win_a_second_account(
+    handler, accounts_table, sessions_table, cloudformation
+):
+    """
+    Three clicks a second apart once took all three accounts in the pool.
+
+    Each request only wrote its session row after CloudFormation accepted
+    the stack, so every one of them looked first, saw nothing running, and
+    helped itself to an account.
+    """
+    accounts_table.put_item(Item={'account_id': ACCOUNT_B, 'status': 'AVAILABLE'})
+
+    first = handler.lambda_handler(a_request(), None)
+    second = handler.lambda_handler(a_request(), None)
+
+    assert first['statusCode'] == 200
+    assert second['statusCode'] == 400
+    assert 'already have this game' in json.loads(second['body'])['message']
+    assert len(cloudformation.stacks) == 1
+    assert accounts_table.get_item(
+        Key={'account_id': ACCOUNT_B})['Item']['status'] == 'AVAILABLE'
+
+
+def test_a_different_game_is_still_allowed(handler, accounts_table, cloudformation):
+    accounts_table.put_item(Item={'account_id': ACCOUNT_B, 'status': 'AVAILABLE'})
+
+    handler.lambda_handler(a_request(), None)
+    other = handler.lambda_handler(a_request('game99'), None)
+
+    assert other['statusCode'] == 200
+    assert len(cloudformation.stacks) == 2
+
+
+def test_ending_the_session_lets_the_player_start_it_again(
+    handler, accounts_table, sessions_table, cloudformation, cleanup_project
+):
+    import session_teardown
+    from account_manager import get_account_manager
+
+    body = json.loads(handler.lambda_handler(a_request(), None)['body'])
+    session = sessions_table.get_item(Key={'session_id': body['sessionId']})['Item']
+    session_teardown.end_session(sessions_table, session, get_account_manager())
+
+    accounts_table.put_item(Item={'account_id': ACCOUNT_B, 'status': 'AVAILABLE'})
+    again = handler.lambda_handler(a_request(), None)
+
+    assert again['statusCode'] == 200
+
+
+def test_a_start_that_fails_does_not_block_the_next_one(
+    handler, accounts_table, cloudformation, monkeypatch
+):
+    real_put = handler.team_role.put_game_policy
+    attempts = []
+
+    def fail_the_first_time(iam_client, document):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ClientError(
+                {'Error': {'Code': 'AccessDenied', 'Message': 'not allowed'}}, 'PutRolePolicy'
+            )
+        return real_put(iam_client, document)
+
+    monkeypatch.setattr(handler.team_role, 'put_game_policy', fail_the_first_time)
+
+    assert handler.lambda_handler(a_request(), None)['statusCode'] == 500
+    # The lock has to come off with the account, or one bad start would lock
+    # the player out of that game until someone noticed.
+    assert handler.lambda_handler(a_request(), None)['statusCode'] == 200
 
 
 def test_a_role_that_cannot_be_set_up_costs_nothing(
