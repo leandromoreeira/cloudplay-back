@@ -52,6 +52,39 @@ def _revoke_console_access(account_manager, account_id):
         print(f"Could not revoke console permissions in {account_id}: {e}")
 
 
+def _delete_lab_stack(account_manager, account_id, session_id):
+    """
+    Ask CloudFormation to start tearing the lab down, and don't wait.
+
+    The wipe does not depend on this. What it buys is a head start: the
+    cleanup build spends its first minute provisioning a container and
+    downloading aws-nuke, and aws-nuke then calls DeleteStack itself and
+    blocks on it. One observed game spent 18 of its 20 minutes inside that
+    call. Starting the clock here means that minute overlaps instead of
+    queueing behind.
+
+    FORCE_DELETE_STACK is the only forceful option that can be passed up
+    front. It does nothing while a delete is going normally and takes effect
+    if the stack gets stuck, which is exactly when it is wanted. The other
+    one, RetainResources, is documented as DELETE_FAILED-only and needs the
+    logical IDs of whatever refused to go, so it cannot be guessed here —
+    aws-nuke already retries that way once a stack reaches DELETE_FAILED.
+    """
+    try:
+        cloudformation = account_manager.create_cross_account_client(
+            account_id, 'cloudformation'
+        )
+        cloudformation.delete_stack(
+            StackName=f'game-session-{session_id}',
+            DeletionMode='FORCE_DELETE_STACK',
+        )
+        print(f"Asked CloudFormation to delete game-session-{session_id}")
+    except ClientError as e:
+        print(f"Could not start the stack delete in {account_id}: {e}")
+    except Exception as e:
+        print(f"Could not start the stack delete in {account_id}: {e}")
+
+
 def _result(outcome, account_id=None, build_id=None, error=None):
     return {
         'outcome': outcome,
@@ -106,8 +139,9 @@ def end_session(sessions_table, session, account_manager, reason=None):
         return _result(SKIPPED, account_id)
 
     # Only now: before the hold, the account could still belong to someone
-    # else, and taking their permissions away would be the wrong account.
+    # else, and acting on it would be acting on the wrong account.
     _revoke_console_access(account_manager, account_id)
+    _delete_lab_stack(account_manager, account_id, session_id)
 
     try:
         build = boto3.client('codebuild').start_build(

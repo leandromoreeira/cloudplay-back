@@ -229,6 +229,93 @@ def test_a_revocation_that_fails_does_not_stop_the_wipe(
     assert account(accounts_table)['status'] == 'CLEANING'
 
 
+class RecordingCloudFormation:
+    """Records delete_stack instead of pretending to be CloudFormation."""
+
+    def __init__(self):
+        self.deletes = []
+
+    def delete_stack(self, **kwargs):
+        self.deletes.append(kwargs)
+        return {}
+
+
+@pytest.fixture
+def stack_deletes(monkeypatch):
+    """Point the cross-account CloudFormation client at a recorder."""
+    import boto3
+    import account_manager
+
+    recorder = RecordingCloudFormation()
+    real = account_manager.AccountManager.create_cross_account_client
+
+    def route(self, account_id, service_name):
+        if service_name == 'cloudformation':
+            return recorder
+        return boto3.client(service_name)
+
+    monkeypatch.setattr(account_manager.AccountManager, 'create_cross_account_client', route)
+    return recorder
+
+
+def test_cloudformation_is_asked_to_start_before_the_build(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, stack_deletes
+):
+    """
+    aws-nuke calls DeleteStack itself and blocks on it; one game spent 18 of
+    its 20 minutes inside that call. Starting it here overlaps with the
+    minute the build spends provisioning instead of queueing behind it.
+    """
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+
+    teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    assert len(stack_deletes.deletes) == 1
+    assert stack_deletes.deletes[0]['StackName'] == 'game-session-s-1'
+
+
+def test_the_delete_is_told_to_force_its_way_through(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, stack_deletes
+):
+    # Does nothing while the delete goes normally, and takes over if the
+    # stack gets stuck — which is the only case worth asking about.
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+
+    teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    assert stack_deletes.deletes[0]['DeletionMode'] == 'FORCE_DELETE_STACK'
+
+
+def test_an_account_someone_else_holds_keeps_its_stack(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, stack_deletes
+):
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'AVAILABLE'})
+
+    teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    # Not ours to touch, so nothing in it gets deleted.
+    assert stack_deletes.deletes == []
+
+
+def test_a_stack_delete_that_fails_does_not_stop_the_wipe(
+    sessions_table, accounts_table, manager, teardown, cleanup_project, monkeypatch
+):
+    import account_manager
+
+    def unreachable(self, account_id, service_name):
+        raise RuntimeError('cannot get into the account')
+
+    monkeypatch.setattr(
+        account_manager.AccountManager, 'create_cross_account_client', unreachable
+    )
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+
+    result = teardown.end_session(sessions_table, a_session(sessions_table), manager)
+
+    # The head start is a bonus; aws-nuke deletes the stack either way.
+    assert result['outcome'] == teardown.STARTED
+
+
 def test_an_account_whose_build_will_not_start_is_quarantined(
     sessions_table, accounts_table, manager, teardown, monkeypatch, verified_sender
 ):
