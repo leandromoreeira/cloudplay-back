@@ -26,6 +26,7 @@ os.environ.setdefault('AWS_SECURITY_TOKEN', 'testing')
 os.environ.setdefault('AWS_SESSION_TOKEN', 'testing')
 
 ACCOUNTS_TABLE = 'test-Game-Accounts'
+GAMES_TABLE = 'test-Games'
 SESSIONS_TABLE = 'test-Game-Sessions'
 ACCESS_TABLE = 'test-Game-Access'
 CLEANUP_PROJECT = 'test-account-cleanup'
@@ -101,6 +102,22 @@ def sessions_table(aws, monkeypatch):
         BillingMode='PAY_PER_REQUEST',
     )
     return dynamodb.Table(SESSIONS_TABLE)
+
+
+@pytest.fixture
+def games_table(aws, monkeypatch):
+    """The catalogue itself: one item per game, tasks nested inside it."""
+    import boto3
+
+    monkeypatch.setenv('GAMES_TABLE', GAMES_TABLE)
+    dynamodb = boto3.resource('dynamodb')
+    dynamodb.create_table(
+        TableName=GAMES_TABLE,
+        KeySchema=[{'AttributeName': 'id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
+        BillingMode='PAY_PER_REQUEST',
+    )
+    return dynamodb.Table(GAMES_TABLE)
 
 
 @pytest.fixture
