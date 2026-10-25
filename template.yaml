@@ -16,6 +16,7 @@ Globals:
         GAME_ACCESS_TABLE: !Ref GameAccessTable
         GAME_ACCOUNTS_TABLE: !Ref GameAccountsTable
         GAME_PROGRESS_TABLE: !Ref GameProgressTable
+        STACK_EVENTS_TOPIC_ARN: !Ref StackEventsTopic
         S3_BUCKET_NAME: !Ref S3BucketName
         ALERT_EMAIL: !Ref AlertEmail
 
@@ -579,6 +580,80 @@ Resources:
   # The build itself never writes account state. This owns that transition, so
   # a build that times out or is stopped still releases or quarantines the
   # account instead of leaving it stuck in CLEANING forever.
+  # CloudFormation publishes every lab stack's state changes here, because
+  # start_game_session passes this topic as a NotificationARN. Before it, the
+  # only thing that discovered a stack had finished was the player's page
+  # asking, at the cost of an AssumeRole and a DescribeStacks per poll.
+  StackEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-stack-events"
+
+  # Only stacks the orchestrator itself created can publish here. A
+  # subscription filter cannot do this job: CloudFormation sends no message
+  # attributes and its body is plain text rather than JSON, so neither
+  # filter scope has anything to match on. Narrowing the publisher closes
+  # the same hole earlier, at the topic instead of after delivery.
+  #
+  # CreateStack checks the *caller* can publish and fails with a 403 if it
+  # cannot, so a wrong policy breaks starting a game loudly rather than
+  # losing events quietly. Scoped to the organisation as well, like the
+  # artefacts bucket, so a pool account added later needs no change here.
+  #
+  # Principals of this account are not covered: inside the owning account an
+  # identity policy grants access on its own, whatever this says. That is
+  # unavoidable and harmless — the account is ours.
+  StackEventsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref StackEventsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: StacksInsideTheOrganisation
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: sns:Publish
+            Resource: !Ref StackEventsTopic
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+              ArnLike:
+                aws:PrincipalArn: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+
+  StackEventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/stack_events/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameAccountsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
+      Architectures:
+        - x86_64
+      Events:
+        StackEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref StackEventsTopic
+
+
   CleanupResultFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -775,6 +850,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${SessionJanitorFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  StackEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackEventsFunction}"
       RetentionInDays: !Ref LogRetentionDays
 
   ConsoleAccessLogGroup:

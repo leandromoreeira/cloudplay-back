@@ -1,10 +1,10 @@
 """
 Polling a session.
 
-The one behaviour worth pinning here is what happens before CloudFormation
-has been asked for anything: the handler treats a missing stack as a
-finished teardown, which is right once a stack existed and wrong while one
-is still on its way.
+Since the stack events topic exists, this handler asks CloudFormation
+nothing: stack_events writes each transition onto the session as it
+happens. What these pin is that it stays that way — the cross-account call
+living here again is the regression worth catching.
 """
 
 import json
@@ -97,14 +97,6 @@ def test_a_starting_session_is_not_mistaken_for_a_finished_one(
     assert cloudformation.describe_calls == 0
 
 
-def test_a_stack_that_really_is_gone_closes_the_session(handler, sessions_table):
-    given_session(sessions_table, 'CREATE_COMPLETE')
-
-    body = body_of(handler.lambda_handler(a_request(), None))
-
-    assert body['stack_status'] == 'DELETE_COMPLETE'
-    assert sessions_table.get_item(Key={'session_id': SESSION_ID})['Item']['active'] is False
-
 
 def test_the_response_carries_nothing_the_screen_does_not_need(handler, sessions_table):
     given_session(sessions_table, 'CREATE_COMPLETE')
@@ -148,3 +140,24 @@ def test_a_fresh_session_has_an_empty_board(handler, sessions_table):
     given_session(sessions_table, 'CREATE_COMPLETE')
 
     assert body_of(handler.lambda_handler(a_request(), None))['completed_tasks'] == {}
+
+
+# --- the stack status now arrives by notification ---------------------------
+
+@pytest.mark.parametrize('status', [
+    'STARTING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'ROLLBACK_COMPLETE',
+])
+def test_the_stored_status_is_taken_at_its_word(
+    handler, sessions_table, cloudformation, status
+):
+    given_session(sessions_table, status)
+
+    body = body_of(handler.lambda_handler(a_request(), None))
+
+    # stack_events writes the status as CloudFormation reports it, so there
+    # is nothing here left to find out. Asking anyway is what used to cost
+    # an AssumeRole and a DescribeStacks on every single poll.
+    assert body['stack_status'] == status
+    assert cloudformation.describe_calls == 0
+
+

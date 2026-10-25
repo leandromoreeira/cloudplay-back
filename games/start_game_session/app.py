@@ -149,9 +149,14 @@ def lambda_handler(event, context):
         print(f"Creating CloudFormation stack {stack_name} in account {selected_account} using template URL {template_url}")
 
         # Deploy to the selected cross-account using cross-account CloudFormation client
+        # The topic is what makes the session row keep up with the stack on
+        # its own. CloudFormation checks this caller may publish to it and
+        # refuses the whole call otherwise, so a broken topic policy shows
+        # up here rather than as sessions that never leave "building".
         cf_client.create_stack(
             StackName=stack_name,
             TemplateURL=template_url,
+            NotificationARNs=[os.environ['STACK_EVENTS_TOPIC_ARN']],
             Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND']
         )
 

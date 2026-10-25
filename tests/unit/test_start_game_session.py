@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 
 from tests.conftest import ACCOUNT_A, ACCOUNT_B, load_handler
 
+TOPIC_ARN = 'arn:aws:sns:us-east-1:673000199571:test-stack-events'
 GAME_ID = 'game1'
 
 
@@ -44,6 +45,7 @@ def handler(sessions_table, accounts_table, access_table, games_bucket,
     import account_manager
 
     monkeypatch.setenv('AWS_REGION', 'us-east-1')
+    monkeypatch.setenv('STACK_EVENTS_TOPIC_ARN', TOPIC_ARN)
 
     # Cross-account hops are STS's job, not this handler's: point both at the
     # mocked account so the test is about what the handler does with them.
@@ -321,3 +323,11 @@ def test_the_session_starts_with_an_empty_board(handler, sessions_table):
     session = sessions_table.scan()['Items'][0]
     # A replay of a finished game must not open showing the previous run.
     assert session['completed_tasks'] == {}
+
+
+def test_cloudformation_is_told_where_to_report_back(handler, cloudformation):
+    handler.lambda_handler(a_request(), None)
+
+    # Without this the session row only learns what the stack is doing when
+    # somebody asks, which is the whole point of the topic.
+    assert cloudformation.stacks[0]['NotificationARNs'] == [TOPIC_ARN]

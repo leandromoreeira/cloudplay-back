@@ -39,8 +39,12 @@ POST /games/{id}/start
   reivindica uma conta           <- escrita condicional, atômica
   grava account_id na sessão
   garante a HengHaTeamRole + escreve a GamePolicy do game
-  create_stack                   <- template vem do S3
+  create_stack                   <- template vem do S3, com NotificationARNs
   sessão -> CREATE_IN_PROGRESS
+
+CloudFormation -> tópico SNS -> stack_events
+  grava stack_status na sessão sozinho, sem ninguém perguntar
+  em CREATE_COMPLETE, busca os outputs (única chamada cross-account)
 
 POST /games/{id}/console  ->  sessão de console AWS de 1 hora
 POST /games/{id}/tasks/{t}/answer  ->  invoca validate_taskN na conta do game
@@ -91,6 +95,42 @@ continua errado para uma sessão largada aberta de um dia para o outro.
 As três escritas de progresso são **best-effort**: nenhuma delas pode
 derrubar um start que deu certo, uma resposta correta ou a limpeza de uma
 conta. Um `playing` preso é cosmético e some no próximo start.
+
+## O status do stack chega sozinho
+
+O `create_stack` recebe o tópico `aws-jam-stack-events` em `NotificationARNs`,
+e a Lambda `stack_events` grava cada transição na sessão. Antes disso, a única
+coisa que descobria que um stack tinha ficado pronto era a página do aluno
+perguntando — cada poll custava um `AssumeRole` + `DescribeStacks` na conta do
+game, e a sessão só estava correta até onde alguém tinha perguntado.
+
+Três coisas que não são óbvias:
+
+- **A policy do tópico libera por `aws:PrincipalOrgID` + `ArnLike` na
+  `CloudPlayGameRole`**, não por service principal. O `CreateStack` valida que
+  *quem chama* pode publicar e recusa com 403 se não puder — então uma policy
+  errada quebra o start de forma barulhenta, em vez de perder eventos em
+  silêncio. Verificado na prática.
+- **Não dá para filtrar na subscrição.** O CloudFormation não manda
+  `MessageAttributes` e o corpo é texto, não JSON — nenhum dos dois escopos de
+  filtro do SNS tem o que casar. Por isso a restrição vive na policy do
+  tópico: quem não é a role do orquestrador não publica. Principals da própria
+  conta orquestradora passam de qualquer forma (dentro da conta dona, a policy
+  de IAM concede sozinha); é inevitável e inofensivo.
+- **O formato é texto, `chave='valor'` por linha**, não JSON.
+- **O SNS não garante ordem.** A escrita é condicional em
+  `stack_status_at < :ts`, senão um `CREATE_IN_PROGRESS` atrasado sobrescreve
+  o `CREATE_COMPLETE` que veio antes dele e o aluno volta a ver spinner sobre
+  um lab pronto.
+
+O `get_game_session` virou **leitura pura do DynamoDB** — não fala com o
+CloudFormation em hipótese alguma. O `active` da sessão é do
+`session_teardown`; o status do stack é do `stack_events`. Se um dia voltar
+uma chamada cross-account para lá, é regressão: há teste pegando.
+
+Eventos de **nested stack** (o `validation_lambdas.yml` da maioria dos games)
+também têm `ResourceType = AWS::CloudFormation::Stack`. São distinguidos por
+`LogicalResourceId != StackName`.
 
 ## O pool de contas
 
