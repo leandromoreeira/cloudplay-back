@@ -110,10 +110,10 @@ def given_game(games_table, tasks=None):
     })
 
 
-def a_request(claims=None, task_id='task1', answer='my-answer'):
+def a_request(claims=None, task_id='task1', answer='my-answer', body=None):
     return {
         'pathParameters': {'gameId': GAME_ID, 'taskId': task_id},
-        'body': json.dumps({'answer': answer}),
+        'body': json.dumps(body if body is not None else {'answer': answer}),
         'requestContext': {'authorizer': {'claims': claims if claims is not None else {
             'email': PLAYER, 'cognito:groups': '[full-access]',
         }}},
@@ -380,3 +380,32 @@ def test_a_task_that_is_not_the_last_does_not_end_the_game(
     assert 'Item' not in progress_table.get_item(
         Key={'user_email': PLAYER, 'game_id': GAME_ID}
     )
+
+
+# --- not every task wants something typed -----------------------------------
+
+def test_a_task_with_nothing_typed_is_still_validated(
+    handler, sessions_table, games_table, validator
+):
+    given_session(sessions_table)
+    given_game(games_table)
+
+    response = handler.lambda_handler(a_request(answer=''), None)
+
+    # Most tasks are checked against the AWS account. Refusing an empty
+    # answer only taught players to type a character to reach the button.
+    assert response['statusCode'] == 200
+    assert validator.invocations[0]['payload']['userInput'] == ''
+
+
+def test_a_missing_answer_reaches_the_validator_as_a_string(
+    handler, sessions_table, games_table, validator
+):
+    given_session(sessions_table)
+    given_game(games_table)
+
+    handler.lambda_handler(a_request(body={}), None)
+
+    # Validators are written expecting a string; null would reach them as
+    # None and break ones that call .strip() on it.
+    assert validator.invocations[0]['payload']['userInput'] == ''

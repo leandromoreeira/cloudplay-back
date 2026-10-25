@@ -13,7 +13,11 @@ def lambda_handler(event, context):
     game_id = event['pathParameters']['gameId']
     task_id = event['pathParameters']['taskId']
     body = json.loads(event['body'])
-    answer = body.get('answer')
+    # A task checked against the AWS account needs nothing typed, and the
+    # page no longer makes the player type something to reach the button.
+    # Validators are written expecting a string, so an absent answer is
+    # an empty one rather than null.
+    answer = body.get('answer') or ''
 
     user_name, groups = get_identity(event)
     team_display_name = user_name or 'Unknown Team'  # Use email as team name for now
