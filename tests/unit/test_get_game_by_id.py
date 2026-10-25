@@ -16,7 +16,7 @@ GAME_ID = 'game1'
 
 
 @pytest.fixture
-def handler(games_table, access_table):
+def handler(games_table, access_table, progress_table):
     return load_handler('get_game_by_id')
 
 
@@ -91,3 +91,22 @@ def test_a_request_without_claims_gets_nothing(handler, games_table):
     )
 
     assert response['statusCode'] == 404
+
+
+def test_the_game_carries_the_players_status(handler, games_table, progress_table):
+    import game_progress
+
+    given_game(games_table)
+    game_progress.mark_playing(PLAYER, GAME_ID, 'session-1')
+
+    response = handler.lambda_handler(a_request(full_access()), None)
+
+    assert body_of(response)['progress'] == {'status': 'in_progress'}
+
+
+def test_an_untouched_game_is_not_started(handler, games_table, progress_table):
+    given_game(games_table)
+
+    response = handler.lambda_handler(a_request(full_access()), None)
+
+    assert body_of(response)['progress'] == {'status': 'todo'}

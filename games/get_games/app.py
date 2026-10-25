@@ -5,6 +5,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
 from access_control import get_identity, get_accessible_game_ids
 
 dynamodb = boto3.resource('dynamodb')
@@ -74,6 +75,14 @@ def lambda_handler(event, context):
         start_index = (page - 1) * page_size
         end_index = start_index + page_size
         paginated_items = items[start_index:end_index]
+
+        # One query covers every game this player has touched; anything it
+        # does not mention has never been started, which is the default.
+        statuses = game_progress.statuses_for(email)
+        for item in paginated_items:
+            item['progress'] = {
+                'status': statuses.get(item.get('id'), game_progress.TODO)
+            }
 
         return {
             'statusCode': 200,

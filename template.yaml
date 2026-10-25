@@ -15,6 +15,7 @@ Globals:
         GAME_SESSIONS_TABLE: !Ref GameSessionsTable
         GAME_ACCESS_TABLE: !Ref GameAccessTable
         GAME_ACCOUNTS_TABLE: !Ref GameAccountsTable
+        GAME_PROGRESS_TABLE: !Ref GameProgressTable
         S3_BUCKET_NAME: !Ref S3BucketName
         ALERT_EMAIL: !Ref AlertEmail
 
@@ -178,6 +179,26 @@ Resources:
     Properties:
       EmailIdentity: !Ref AlertEmail
 
+  GameProgressTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Game-Progress"
+      # One item per player per game, holding the two facts the chip is
+      # derived from: whether they are playing it now, and whether they have
+      # ever finished it. What happened inside a single attempt lives on the
+      # session instead, and goes away with it.
+      AttributeDefinitions:
+        - AttributeName: user_email
+          AttributeType: S
+        - AttributeName: game_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_email
+          KeyType: HASH
+        - AttributeName: game_id
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+
   GameAccessTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -203,6 +224,8 @@ Resources:
       Layers:
         - !Ref UtilsLayer
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameProgressTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
         - DynamoDBReadPolicy:
@@ -228,6 +251,8 @@ Resources:
       Layers:
         - !Ref UtilsLayer
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameProgressTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
         - DynamoDBReadPolicy:
@@ -294,6 +319,8 @@ Resources:
       Policies:
         - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
+            TableName: !Ref GameProgressTable
+        - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
             TableName: !Ref GameAccessTable
@@ -336,6 +363,8 @@ Resources:
       # the session and hands the account to the cleanup build.
       Policies:
         - DynamoDBCrudPolicy:
+            TableName: !Ref GameProgressTable
+        - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
             TableName: !Ref GameAccessTable
@@ -377,6 +406,8 @@ Resources:
       Layers:
         - !Ref UtilsLayer
       Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameProgressTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
         - DynamoDBCrudPolicy:
@@ -605,6 +636,8 @@ Resources:
           CLEANUP_PROJECT_NAME: !Ref AccountCleanupProject
           MAX_SESSION_HOURS: !Sub "${MaxSessionHours}"
       Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameProgressTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
         - DynamoDBCrudPolicy:

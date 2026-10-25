@@ -5,6 +5,7 @@ import re
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
 from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
 
@@ -97,6 +98,24 @@ def lambda_handler(event, context):
 
         game = game_response['Item']
 
+        # Tasks open one at a time. The page already hides a locked task,
+        # so reaching here means the gate was gone around rather than
+        # clicked through, and the answer must not reach the validator.
+        done_tasks = game_progress.completed_tasks(session)
+        blocking = game_progress.blocking_task(game, done_tasks, task_id)
+        if blocking:
+            return {
+                'statusCode': 409,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'message': f'Finish {blocking} before answering {task_id}',
+                    'blockedBy': blocking
+                })
+            }
+
         # Find the specific task to get its title
         task_title = f"Task {task_number}"  # Default fallback
         for task in game.get('tasks', []):
@@ -171,6 +190,21 @@ def lambda_handler(event, context):
                 progress_percent = response_payload.get('progressPercent', 0)
                 metadata = response_payload.get('metadata', {})
 
+                game_completed = False
+                if completed:
+                    # Written before the answer goes back, so the page can
+                    # trust the response to say whether the game is over.
+                    # Best effort: the player answered correctly either way.
+                    try:
+                        done_tasks = game_progress.record_task_completion(
+                            sessions_table, session, task_id
+                        )
+                        game_completed = game_progress.all_tasks_done(game, done_tasks)
+                        if game_completed:
+                            game_progress.mark_completed(user_name, game_id)
+                    except Exception as e:
+                        print(f"Could not record {task_id} of {game_id}: {e}")
+
                 return {
                     'statusCode': 200,
                     'headers': {
@@ -185,6 +219,11 @@ def lambda_handler(event, context):
                             'message': message,
                             'progressPercent': progress_percent,
                             'metadata': metadata
+                        },
+                        'progress': {
+                            'completed_tasks': sorted(done_tasks),
+                            'total': len(game_progress.task_ids(game)),
+                            'game_completed': game_completed
                         }
                     })
                 }

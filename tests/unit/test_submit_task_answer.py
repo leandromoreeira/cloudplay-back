@@ -50,7 +50,8 @@ def validator():
 
 
 @pytest.fixture
-def handler(sessions_table, games_table, accounts_table, access_table, validator, monkeypatch):
+def handler(sessions_table, games_table, accounts_table, access_table, progress_table,
+            validator, monkeypatch):
     import boto3
     import account_manager
 
@@ -76,7 +77,7 @@ def handler(sessions_table, games_table, accounts_table, access_table, validator
     return load_handler('submit_task_answer')
 
 
-def given_session(sessions_table, active=True, outputs=None, account_id=ACCOUNT_A):
+def given_session(sessions_table, active=True, outputs=None, account_id=ACCOUNT_A, done=None):
     sessions_table.put_item(Item={
         'session_id': SESSION_ID,
         'user_name': PLAYER,
@@ -86,7 +87,13 @@ def given_session(sessions_table, active=True, outputs=None, account_id=ACCOUNT_
         'start_time': '2026-10-24T10:00:00Z',
         'stack_status': 'CREATE_COMPLETE',
         'stack_outputs': OUTPUTS if outputs is None else outputs,
+        'completed_tasks': done or {},
     })
+
+
+def finished(*task_ids):
+    """Tasks already completed in this session, so later ones are unlocked."""
+    return {t: {'completed_at': '2026-10-25T10:05:00Z', 'seconds': 300} for t in task_ids}
 
 
 def given_game(games_table, tasks=None):
@@ -183,7 +190,7 @@ def test_a_session_whose_game_left_the_catalogue_is_reported(handler, sessions_t
 def test_the_validator_is_called_in_the_game_account_with_the_stack_outputs(
     handler, sessions_table, games_table, validator
 ):
-    given_session(sessions_table)
+    given_session(sessions_table, done=finished('task1'))
     given_game(games_table)
 
     handler.lambda_handler(a_request(task_id='task2', answer='the-answer'), None)
@@ -254,7 +261,7 @@ def test_a_failing_answer_is_a_200_with_completed_false(
 def test_a_missing_validator_says_which_one_was_missing(
     handler, sessions_table, games_table, validator
 ):
-    given_session(sessions_table)
+    given_session(sessions_table, done=finished('task1'))
     given_game(games_table)
     validator.error = ClientError(
         {'Error': {'Code': 'ResourceNotFoundException', 'Message': 'Function not found'}},
@@ -282,3 +289,94 @@ def test_an_unreachable_game_account_is_a_500(
     response = handler.lambda_handler(a_request(), None)
 
     assert response['statusCode'] == 500
+
+
+# --- tasks open one at a time -----------------------------------------------
+
+def test_a_task_the_player_has_not_reached_is_refused(
+    handler, sessions_table, games_table, validator
+):
+    given_session(sessions_table)
+    given_game(games_table)
+
+    response = handler.lambda_handler(a_request(task_id='task2'), None)
+
+    assert response['statusCode'] == 409
+    assert body_of(response)['blockedBy'] == 'task1'
+    # The page hides a locked task, so getting here means the gate was gone
+    # around. Nothing may reach the validator.
+    assert validator.invocations == []
+
+
+def test_finishing_one_task_opens_the_next(handler, sessions_table, games_table, validator):
+    given_session(sessions_table, done=finished('task1'))
+    given_game(games_table)
+
+    response = handler.lambda_handler(a_request(task_id='task2'), None)
+
+    assert response['statusCode'] == 200
+    assert len(validator.invocations) == 1
+
+
+def test_the_first_task_is_open_from_the_start(handler, sessions_table, games_table):
+    given_session(sessions_table)
+    given_game(games_table)
+
+    assert handler.lambda_handler(a_request(task_id='task1'), None)['statusCode'] == 200
+
+
+# --- finishing a task, and finishing the game -------------------------------
+
+def test_a_completed_task_is_written_onto_the_session(handler, sessions_table, games_table):
+    given_session(sessions_table)
+    given_game(games_table)
+
+    handler.lambda_handler(a_request(task_id='task1'), None)
+
+    stored = sessions_table.get_item(Key={'session_id': SESSION_ID})['Item']
+    assert 'task1' in stored['completed_tasks']
+    assert stored['completed_tasks']['task1']['completed_at']
+
+
+def test_a_wrong_answer_records_nothing(handler, sessions_table, games_table, validator):
+    given_session(sessions_table)
+    given_game(games_table)
+    validator.payload = {'completed': False, 'message': 'Nope', 'progressPercent': 10}
+
+    handler.lambda_handler(a_request(task_id='task1'), None)
+
+    stored = sessions_table.get_item(Key={'session_id': SESSION_ID})['Item']
+    assert stored['completed_tasks'] == {}
+
+
+def test_the_last_task_says_the_game_is_over(handler, sessions_table, games_table, progress_table):
+    given_session(sessions_table, done=finished('task1'))
+    given_game(games_table)  # two tasks
+
+    response = handler.lambda_handler(a_request(task_id='task2'), None)
+
+    body = body_of(response)
+    # This is what opens the "shut the environment down" dialog, so it is
+    # the backend's call and not something the page works out for itself.
+    assert body['progress']['game_completed'] is True
+    assert body['progress']['completed_tasks'] == ['task1', 'task2']
+    assert body['progress']['total'] == 2
+
+    progress = progress_table.get_item(
+        Key={'user_email': PLAYER, 'game_id': GAME_ID}
+    )['Item']
+    assert progress['ever_completed_at']
+
+
+def test_a_task_that_is_not_the_last_does_not_end_the_game(
+    handler, sessions_table, games_table, progress_table
+):
+    given_session(sessions_table)
+    given_game(games_table)  # two tasks
+
+    body = body_of(handler.lambda_handler(a_request(task_id='task1'), None))
+
+    assert body['progress']['game_completed'] is False
+    assert 'Item' not in progress_table.get_item(
+        Key={'user_email': PLAYER, 'game_id': GAME_ID}
+    )

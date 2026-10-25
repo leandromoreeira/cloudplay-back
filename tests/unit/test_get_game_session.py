@@ -112,11 +112,39 @@ def test_the_response_carries_nothing_the_screen_does_not_need(handler, sessions
     body = body_of(handler.lambda_handler(a_request(), None))
 
     # Which AWS account a game runs in, and the internal session id, are
-    # ours to know. The page renders four fields and these were neither.
-    assert set(body) == {'active_session', 'start_time', 'stack_status', 'stack_outputs'}
+    # ours to know, and neither was ever rendered.
+    assert set(body) == {
+        'active_session', 'start_time', 'stack_status', 'stack_outputs',
+        'completed_tasks',
+    }
 
 
 def test_no_session_is_reported_plainly(handler):
     body = body_of(handler.lambda_handler(a_request(), None))
 
     assert body['active_session'] is False
+
+
+def test_the_board_for_this_attempt_comes_back_with_the_session(handler, sessions_table):
+    given_session(sessions_table, 'CREATE_COMPLETE')
+    sessions_table.update_item(
+        Key={'session_id': SESSION_ID},
+        UpdateExpression='SET completed_tasks = :done',
+        ExpressionAttributeValues={':done': {
+            'task1': {'completed_at': '2026-10-25T10:05:00Z', 'seconds': 300},
+        }},
+    )
+
+    body = body_of(handler.lambda_handler(a_request(), None))
+
+    # Decimal straight off DynamoDB would have failed json.dumps, so the
+    # seconds have to arrive as a plain number.
+    assert body['completed_tasks'] == {
+        'task1': {'completed_at': '2026-10-25T10:05:00Z', 'seconds': 300}
+    }
+
+
+def test_a_fresh_session_has_an_empty_board(handler, sessions_table):
+    given_session(sessions_table, 'CREATE_COMPLETE')
+
+    assert body_of(handler.lambda_handler(a_request(), None))['completed_tasks'] == {}

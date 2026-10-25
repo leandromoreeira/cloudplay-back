@@ -16,7 +16,7 @@ PLAYER = 'player@example.com'
 
 
 @pytest.fixture
-def handler(games_table, access_table):
+def handler(games_table, access_table, progress_table):
     # The module grabs its table at import time, so the fixtures above have to
     # have run first.
     return load_handler('get_games')
@@ -152,3 +152,40 @@ def test_a_page_past_the_end_is_empty_rather_than_an_error(handler, games_table)
     body = listed(handler.lambda_handler(a_request(page=9), None))
 
     assert body['data'] == []
+
+
+# --- the chip ---------------------------------------------------------------
+
+def test_every_game_carries_a_status(handler, games_table):
+    given_games(games_table, a_game('game1'))
+
+    body = listed(handler.lambda_handler(a_request(), None))
+
+    assert body['data'][0]['progress'] == {'status': 'todo'}
+
+
+def test_a_game_being_played_and_one_already_finished(handler, games_table, progress_table):
+    import game_progress
+
+    given_games(games_table, a_game('game1'), a_game('game2'), a_game('game3'))
+    game_progress.mark_playing(PLAYER, 'game1', 'session-1')
+    game_progress.mark_completed(PLAYER, 'game2')
+    game_progress.mark_not_playing(PLAYER, 'game2')
+
+    body = listed(handler.lambda_handler(a_request(order='asc'), None))
+    by_id = {game['id']: game['progress']['status'] for game in body['data']}
+
+    assert by_id == {'game1': 'in_progress', 'game2': 'done', 'game3': 'todo'}
+
+
+def test_replaying_a_finished_game_shows_as_in_progress(handler, games_table, progress_table):
+    import game_progress
+
+    given_games(games_table, a_game('game1'))
+    game_progress.mark_completed(PLAYER, 'game1')
+    game_progress.mark_not_playing(PLAYER, 'game1')
+    game_progress.mark_playing(PLAYER, 'game1', 'session-2')
+
+    body = listed(handler.lambda_handler(a_request(), None))
+
+    assert body['data'][0]['progress']['status'] == 'in_progress'

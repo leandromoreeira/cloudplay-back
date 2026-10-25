@@ -4,6 +4,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
 from access_control import get_identity, can_access_game
 
 dynamodb = boto3.resource('dynamodb')
@@ -28,6 +29,10 @@ def lambda_handler(event, context):
                 },
                 'body': json.dumps({'error': 'Game not found'})
             }
+
+        # Only the headline status here. Which tasks are done belongs to
+        # the attempt, so it rides on the session the page already polls.
+        item['progress'] = {'status': game_progress.status_for(email, game_id)}
 
         return {
             'statusCode': 200,

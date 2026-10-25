@@ -6,6 +6,7 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
 import team_role
 from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
@@ -84,7 +85,10 @@ def lambda_handler(event, context):
                 'active': True,
                 'end_time': None,
                 'stack_status': STATUS_STARTING,
-                'stack_outputs': {}
+                'stack_outputs': {},
+                # The tasks finished in this attempt, filled in as they are.
+                # A replay of a finished game starts from an empty board.
+                'completed_tasks': {}
             }
         )
     except ClientError as e:
@@ -177,6 +181,14 @@ def lambda_handler(event, context):
         UpdateExpression='SET stack_status = :status',
         ExpressionAttributeValues={':status': 'CREATE_IN_PROGRESS'}
     )
+
+    # Last, so that a start which fell over earlier leaves no trace saying
+    # the player is in a game they are not in. Best effort: the lab is up,
+    # and a wrong chip is not worth failing that.
+    try:
+        game_progress.mark_playing(user_name, game_id, session_id)
+    except Exception as e:
+        print(f"Could not record {user_name} as playing {game_id}: {e}")
 
     return _response(200, {
         'message': message,

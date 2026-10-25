@@ -39,7 +39,7 @@ def cloudformation(sessions_table):
 
 @pytest.fixture
 def handler(sessions_table, accounts_table, access_table, games_bucket,
-            cloudformation, monkeypatch):
+            progress_table, cloudformation, monkeypatch):
     import boto3
     import account_manager
 
@@ -282,3 +282,42 @@ def test_a_broken_iam_json_does_not_start_a_session(
     assert cloudformation.stacks == []
     assert accounts_table.get_item(
         Key={'account_id': ACCOUNT_A})['Item']['status'] == 'AVAILABLE'
+
+
+def test_the_player_is_recorded_as_playing_once_the_lab_is_on_its_way(
+    handler, progress_table
+):
+    handler.lambda_handler(a_request(), None)
+
+    item = progress_table.get_item(
+        Key={'user_email': 'player@example.com', 'game_id': GAME_ID}
+    )['Item']
+    assert item['playing'] is True
+    assert item['last_session_id']
+
+
+def test_a_start_that_never_happened_records_no_progress(
+    handler, accounts_table, progress_table
+):
+    accounts_table.update_item(
+        Key={'account_id': ACCOUNT_A},
+        UpdateExpression='SET #s = :s',
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={':s': 'IN_USE'},
+    )
+
+    response = handler.lambda_handler(a_request(), None)
+
+    # Nothing was started, so nothing may claim the player is in a game.
+    assert response['statusCode'] == 503
+    assert 'Item' not in progress_table.get_item(
+        Key={'user_email': 'player@example.com', 'game_id': GAME_ID}
+    )
+
+
+def test_the_session_starts_with_an_empty_board(handler, sessions_table):
+    handler.lambda_handler(a_request(), None)
+
+    session = sessions_table.scan()['Items'][0]
+    # A replay of a finished game must not open showing the previous run.
+    assert session['completed_tasks'] == {}

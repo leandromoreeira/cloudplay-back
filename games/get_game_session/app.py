@@ -4,6 +4,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
 from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
 
@@ -163,6 +164,10 @@ def lambda_handler(event, context):
                     "start_time": session["start_time"],
                     "stack_status": stack_status,
                     "stack_outputs": stack_outputs,
+                    # Which tasks are done in this attempt, and how long each
+                    # took. Drives the ticks, the timings and which task the
+                    # page lets the player open next.
+                    "completed_tasks": game_progress.completed_view(session),
                 }
             ),
         }

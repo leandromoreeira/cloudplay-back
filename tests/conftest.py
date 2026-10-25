@@ -27,6 +27,7 @@ os.environ.setdefault('AWS_SESSION_TOKEN', 'testing')
 
 ACCOUNTS_TABLE = 'test-Game-Accounts'
 GAMES_TABLE = 'test-Games'
+PROGRESS_TABLE = 'test-Game-Progress'
 SESSIONS_TABLE = 'test-Game-Sessions'
 ACCESS_TABLE = 'test-Game-Access'
 CLEANUP_PROJECT = 'test-account-cleanup'
@@ -118,6 +119,28 @@ def games_table(aws, monkeypatch):
         BillingMode='PAY_PER_REQUEST',
     )
     return dynamodb.Table(GAMES_TABLE)
+
+
+@pytest.fixture
+def progress_table(aws, monkeypatch):
+    """One item per (player, game): has it ever been finished, is it running."""
+    import boto3
+
+    monkeypatch.setenv('GAME_PROGRESS_TABLE', PROGRESS_TABLE)
+    dynamodb = boto3.resource('dynamodb')
+    dynamodb.create_table(
+        TableName=PROGRESS_TABLE,
+        KeySchema=[
+            {'AttributeName': 'user_email', 'KeyType': 'HASH'},
+            {'AttributeName': 'game_id', 'KeyType': 'RANGE'},
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'user_email', 'AttributeType': 'S'},
+            {'AttributeName': 'game_id', 'AttributeType': 'S'},
+        ],
+        BillingMode='PAY_PER_REQUEST',
+    )
+    return dynamodb.Table(PROGRESS_TABLE)
 
 
 @pytest.fixture

@@ -341,3 +341,48 @@ def test_an_account_whose_build_will_not_start_is_quarantined(
     assert stored(sessions_table)['active'] is False
     # ...and a human hears about it.
     assert len(sent_emails()) == 1
+
+
+def test_ending_a_session_takes_the_player_out_of_the_game(
+    sessions_table, accounts_table, progress_table, manager, teardown, cleanup_project
+):
+    import game_progress
+
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+    session = a_session(sessions_table)
+    game_progress.mark_playing('player@example.com', 'game-1', 's-1')
+
+    teardown.end_session(sessions_table, session, manager)
+
+    assert game_progress.status_for('player@example.com', 'game-1') == 'todo'
+
+
+def test_a_game_finished_in_this_session_goes_green_when_it_ends(
+    sessions_table, accounts_table, progress_table, manager, teardown, cleanup_project
+):
+    import game_progress
+
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+    session = a_session(sessions_table)
+    game_progress.mark_playing('player@example.com', 'game-1', 's-1')
+    game_progress.mark_completed('player@example.com', 'game-1')
+
+    teardown.end_session(sessions_table, session, manager)
+
+    assert game_progress.status_for('player@example.com', 'game-1') == 'done'
+
+
+def test_the_janitor_path_clears_it_too(
+    sessions_table, accounts_table, progress_table, manager, teardown, cleanup_project
+):
+    import game_progress
+
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'IN_USE'})
+    session = a_session(sessions_table)
+    game_progress.mark_playing('player@example.com', 'game-1', 's-1')
+
+    # Same call the janitor makes, which is the whole point of the funnel.
+    teardown.end_session(sessions_table, session, manager,
+                         reason='expired by janitor after 3.2h')
+
+    assert game_progress.status_for('player@example.com', 'game-1') == 'todo'

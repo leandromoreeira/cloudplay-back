@@ -12,6 +12,7 @@ import boto3
 from datetime import datetime
 from botocore.exceptions import ClientError
 
+import game_progress
 import team_role
 
 # Outcomes, from the happy path outwards
@@ -128,6 +129,16 @@ def end_session(sessions_table, session, account_manager, reason=None):
         UpdateExpression=update,
         ExpressionAttributeValues=values
     )
+
+    # Whatever else happens below, the player is no longer in this game.
+    # Best effort for the same reason as everything else here: wiping the
+    # account matters more, and a stale "playing" clears itself the next
+    # time they start the game.
+    if session.get('user_name') and session.get('game_id'):
+        try:
+            game_progress.mark_not_playing(session['user_name'], session['game_id'])
+        except Exception as e:
+            print(f"Could not clear the playing flag for {session_id}: {e}")
 
     if not account_id:
         return _result(NO_ACCOUNT)

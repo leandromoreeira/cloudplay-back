@@ -25,6 +25,7 @@ conferir o nuke, emergências de MFA) estão em **`docs/RUNBOOK.md`**.
 | Conteúdo dos games | DynamoDB `aws-jam-Games` (populado a partir do repo de games) |
 | Sessões de jogo | DynamoDB `aws-jam-Game-Sessions` |
 | Pool de contas e seu estado | DynamoDB `aws-jam-Game-Accounts` |
+| Progresso do aluno por game | DynamoDB `aws-jam-Game-Progress` |
 | Quem pode jogar o quê | DynamoDB `aws-jam-Game-Access` + grupo Cognito `full-access` |
 | Templates, validators, artefatos | S3 `cloudraiser-673000199571`, publicados pelo `tools/sync_s3.sh` do repo de games — **não há script de upload aqui** |
 | Infra da aplicação | Stack SAM `aws-jam` (`template.yaml`) |
@@ -55,6 +56,41 @@ EventBridge: build terminou -> cleanup_result
   SUCCEEDED -> conta AVAILABLE,     sessão CLEANUP_COMPLETE
   qualquer outro -> conta QUARANTINED + e-mail, sessão CLEANUP_FAILED
 ```
+
+## Progresso do aluno
+
+Dois registros, porque refazer um game concluído não pode apagar o fato de
+tê-lo concluído:
+
+| Onde | O quê | Vida |
+|---|---|---|
+| `completed_tasks` no item de **sessão** | tasks concluídas nesta tentativa, com `completed_at` e `seconds` | morre com a sessão |
+| `aws-jam-Game-Progress` | `playing` e `ever_completed_at`, um item por (aluno, game) | permanente |
+
+O status do chip **não é gravado** — sai de duas perguntas, em
+`layers/utils-layer/game_progress.py`:
+
+```
+playing            -> in_progress     (vence done: ele está jogando agora)
+ever_completed_at  -> done
+resto              -> todo
+```
+
+Começou e abandonou sem concluir volta para `todo`. `ever_completed_at` é
+escrito com `if_not_exists` e nunca se move.
+
+As tasks **abrem uma de cada vez**: libera até a primeira não concluída da
+sessão atual. O front esconde a travada (se desse para ler, daria para fazer
+fora de ordem e submeter em ordem) e o `submit_task_answer` recusa com 409
+nomeando a que falta. Sem exceção para `full-access`.
+
+`seconds` é medido desde a última coisa concluída — início da sessão ou task
+anterior. Pressupõe trabalho em ordem, o que o travamento agora garante, mas
+continua errado para uma sessão largada aberta de um dia para o outro.
+
+As três escritas de progresso são **best-effort**: nenhuma delas pode
+derrubar um start que deu certo, uma resposta correta ou a limpeza de uma
+conta. Um `playing` preso é cosmético e some no próximo start.
 
 ## O pool de contas
 
@@ -219,6 +255,11 @@ Não "conserte" estas sem ler o motivo:
   já rodou dezenas de sessões.
 - **A revogação do console só acontece depois do `mark_cleaning`.** Antes disso
   a conta poderia já ser de outra pessoa.
+- **`mark_playing` é a última coisa do `start_game_session`.** Antes do
+  `create_stack` daria para o chip dizer que o aluno está num game que não
+  subiu.
+- **`all_tasks_done` é falso para um game sem tasks.** Conjunto vazio é
+  subconjunto de tudo; sem a guarda o chip ficaria verde ao abrir.
 
 ## Pendências conhecidas
 
