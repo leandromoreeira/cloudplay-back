@@ -329,3 +329,48 @@ def test_a_player_cannot_read_the_whole_catalogue_here(handler, user_pool, games
         a_request('/admin/games', 'GET', groups='[full-access]', caller=PLAYER), None)
 
     assert response['statusCode'] == 403
+
+
+# --- addresses travel through a URL -----------------------------------------
+
+def test_an_encoded_address_is_decoded_before_it_is_used(handler, user_pool, access_table):
+    given_user(user_pool, PLAYER, groups=['full-access'])
+
+    # The page has to encode the address to put it in a path, and API
+    # Gateway passes path parameters through without decoding them. Left
+    # alone, the @ arrives as %40: grants were written under a key nothing
+    # reads back, and Cognito answered "no such user" for every change.
+    encoded = PLAYER.replace('@', '%40')
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}/games', 'PUT', email=encoded,
+                  body={'games': ['game1']}), None)
+
+    assert response['statusCode'] == 200
+    stored = access_table.scan()['Items']
+    assert [i['user_email'] for i in stored] == [PLAYER]
+
+
+def test_an_encoded_address_also_reaches_cognito(handler, user_pool):
+    given_user(user_pool, PLAYER)
+    encoded = PLAYER.replace('@', '%40')
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'PATCH', email=encoded,
+                  body={'groups': ['full-access']}), None)
+
+    assert response['statusCode'] == 200
+    assert groups_of(user_pool, PLAYER) == ['full-access']
+
+
+def test_the_self_guard_survives_encoding(handler, user_pool):
+    given_user(user_pool, ADMIN, groups=['admin'])
+    encoded = ADMIN.replace('@', '%40')
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'PATCH', email=encoded,
+                  body={'enabled': False}), None)
+
+    # Comparing the raw path parameter against the caller would have let an
+    # admin disable themselves simply because %40 != @.
+    assert response['statusCode'] == 409

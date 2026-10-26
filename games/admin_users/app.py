@@ -20,6 +20,7 @@ admin area and leaves the AWS CLI as the only way back in.
 
 import json
 import os
+from urllib.parse import unquote
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -270,7 +271,12 @@ def lambda_handler(event, context):
     route = event.get('resource', '')
     target = (event.get('pathParameters') or {}).get('email')
     if target:
-        target = target.strip().lower()
+        # API Gateway hands path parameters over exactly as they appear in
+        # the URL, without decoding them. An address has to be encoded to
+        # travel in a path, so without this the @ arrives as %40 — and the
+        # grant was written under a key nothing would ever read back, while
+        # Cognito answered "no such user" for every group change.
+        target = unquote(target).strip().lower()
 
     try:
         body = json.loads(event['body']) if event.get('body') else {}
