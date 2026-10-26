@@ -12,6 +12,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import cors
 import console_access
 from account_manager import get_account_manager, STATUS_IN_USE
 from access_control import get_identity, can_access_game
@@ -26,7 +27,7 @@ def _response(status_code, body):
         'statusCode': status_code,
         'headers': {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': cors.allowed_origin()
         },
         'body': json.dumps(body)
     }

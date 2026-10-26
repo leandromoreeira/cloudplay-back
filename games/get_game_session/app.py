@@ -4,6 +4,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import cors
 import game_progress
 from access_control import get_identity, can_access_game
 
@@ -18,7 +19,7 @@ def lambda_handler(event, context):
             'statusCode': 401,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
         }
@@ -28,7 +29,7 @@ def lambda_handler(event, context):
             'statusCode': 403,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'You do not have access to this game'})
         }
@@ -54,7 +55,7 @@ def lambda_handler(event, context):
                 "statusCode": 200,
                 'headers': {
                     'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
+                    'Access-Control-Allow-Origin': cors.allowed_origin()
                 },
                 "body": json.dumps({"active_session": False}),
             }
@@ -75,7 +76,7 @@ def lambda_handler(event, context):
             "statusCode": 200,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             # Only what the player's screen actually needs. The account the
             # game runs in is infrastructure, and the session id is ours.
@@ -99,7 +100,7 @@ def lambda_handler(event, context):
             "statusCode": 500,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             "body": json.dumps(
                 {
@@ -114,7 +115,7 @@ def lambda_handler(event, context):
             "statusCode": 500,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             "body": json.dumps({"error": "An unexpected error occurred."}),
         }

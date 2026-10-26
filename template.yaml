@@ -17,6 +17,10 @@ Globals:
         GAME_ACCOUNTS_TABLE: !Ref GameAccountsTable
         GAME_PROGRESS_TABLE: !Ref GameProgressTable
         STACK_EVENTS_TOPIC_ARN: !Ref StackEventsTopic
+        ALLOWED_ORIGIN: !If
+          - UseOwnFrontend
+          - !Sub "https://${CloudFrontDistribution.DomainName}"
+          - !Ref AllowedOrigin
         S3_BUCKET_NAME: !Ref S3BucketName
         ALERT_EMAIL: !Ref AlertEmail
 
@@ -87,6 +91,15 @@ Parameters:
       A player who closes the tab never ends their session, and an abandoned
       session is an account permanently out of the pool.
 
+  AllowedOrigin:
+    Type: String
+    Default: ""
+    Description: >
+      The single origin allowed to read this API. Empty means the CloudFront
+      distribution this stack creates, which is the right answer in all but
+      one case: pointing a local dev server at the deployed API, where you
+      would set it to http://localhost:8080 for as long as that lasts.
+
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -95,6 +108,9 @@ Parameters:
       How long CloudWatch keeps this stack's logs. A log group created by
       Lambda on its own never expires, so without the groups declared below
       every invocation is billed storage forever against a 100 USD budget.
+
+Conditions:
+  UseOwnFrontend: !Equals [!Ref AllowedOrigin, ""]
 
 Resources:
 
@@ -881,7 +897,44 @@ Resources:
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-        AllowOrigin: "'*'"
+        AllowOrigin: !If
+          - UseOwnFrontend
+          - !Sub "'https://${CloudFrontDistribution.DomainName}'"
+          - !Sub "'${AllowedOrigin}'"
+      # API Gateway answers some requests without reaching a handler, and
+      # those answers carried no CORS header at all. The one that bites is
+      # UNAUTHORIZED: the browser hides a 401 it cannot read, so the front's
+      # fetch rejects as a network error and the refresh-and-retry it has
+      # for exactly this case never sees a status to act on.
+      GatewayResponses:
+        UNAUTHORIZED:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !If
+                - UseOwnFrontend
+                - !Sub "'https://${CloudFrontDistribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+        ACCESS_DENIED:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !If
+                - UseOwnFrontend
+                - !Sub "'https://${CloudFrontDistribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !If
+                - UseOwnFrontend
+                - !Sub "'https://${CloudFrontDistribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !If
+                - UseOwnFrontend
+                - !Sub "'https://${CloudFrontDistribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
       Auth:
         Authorizers:
           CognitoAuthorizer:

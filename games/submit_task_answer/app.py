@@ -5,6 +5,7 @@ import re
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import cors
 import game_progress
 from account_manager import get_account_manager
 from access_control import get_identity, can_access_game
@@ -27,7 +28,7 @@ def lambda_handler(event, context):
             'statusCode': 401,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
         }
@@ -37,7 +38,7 @@ def lambda_handler(event, context):
             'statusCode': 403,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'You do not have access to this game'})
         }
@@ -49,7 +50,7 @@ def lambda_handler(event, context):
             'statusCode': 400,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'Invalid task ID format'})
         }
@@ -79,7 +80,7 @@ def lambda_handler(event, context):
                 'statusCode': 404,
                 'headers': {
                     'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
+                    'Access-Control-Allow-Origin': cors.allowed_origin()
                 },
                 'body': json.dumps({'message': 'No active game session found'})
             }
@@ -95,7 +96,7 @@ def lambda_handler(event, context):
                 'statusCode': 404,
                 'headers': {
                     'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
+                    'Access-Control-Allow-Origin': cors.allowed_origin()
                 },
                 'body': json.dumps({'message': 'Game not found'})
             }
@@ -112,7 +113,7 @@ def lambda_handler(event, context):
                 'statusCode': 409,
                 'headers': {
                     'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
+                    'Access-Control-Allow-Origin': cors.allowed_origin()
                 },
                 'body': json.dumps({
                     'message': f'Finish {blocking} before answering {task_id}',
@@ -164,7 +165,7 @@ def lambda_handler(event, context):
                     'statusCode': 500,
                     'headers': {
                         'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
                     },
                     'body': json.dumps({
                         'message': 'Failed to access game environment for validation',
@@ -213,7 +214,7 @@ def lambda_handler(event, context):
                     'statusCode': 200,
                     'headers': {
                         'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
                     },
                     'body': json.dumps({
                         'message': f'Answer for task {task_id} in game {game_id} validated',
@@ -236,7 +237,7 @@ def lambda_handler(event, context):
                     'statusCode': 500,
                     'headers': {
                         'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
                     },
                     'body': json.dumps({
                         'message': 'Validation function returned an error',
@@ -250,7 +251,7 @@ def lambda_handler(event, context):
                     'statusCode': 404,
                     'headers': {
                         'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
                     },
                     'body': json.dumps({
                         'message': f'Validation function {validate_function_name} not found in account {account_id or "local"}',
@@ -263,7 +264,7 @@ def lambda_handler(event, context):
                     'statusCode': 500,
                     'headers': {
                         'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
                     },
                     'body': json.dumps({
                         'message': 'Failed to invoke validation function',
@@ -278,7 +279,7 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({
                 'message': 'Internal server error during task validation',

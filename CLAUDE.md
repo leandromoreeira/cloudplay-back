@@ -181,6 +181,25 @@ não estiver `CLEANING` no DynamoDB.
 O nuke preserva a `HengHaTeamRole` e a `HengHaGuardrails`, mas **não** a
 `GamePolicy` — a conta volta ao pool com a role e os guardrails e nada mais.
 
+## CORS
+
+Uma origem só, nunca `*`: por padrão a distribuição CloudFront desta própria
+stack. O parâmetro `AllowedOrigin` existe para o caso de apontar um dev server
+local para a API publicada (`sam deploy --parameter-overrides
+AllowedOrigin=http://localhost:8080`); vazio significa "a minha CloudFront".
+
+São **três** lugares, e esquecer o terceiro foi o bug:
+
+1. `Cors` no `AWS::Serverless::Api` — gera o `OPTIONS` de preflight.
+2. Cada handler, via `cors.allowed_origin()` da layer.
+3. **`GatewayResponses`** — as respostas que o API Gateway dá sem chegar a
+   handler nenhum. A que importa é `UNAUTHORIZED`: o 401 do authorizer
+   Cognito saía sem header, o browser escondia a resposta, o `fetch` do front
+   rejeitava como erro de rede, e o refresh-and-retry que existe exatamente
+   para esse caso nunca via um status para reagir.
+
+Um teste varre `games/*/app.py` atrás de `'*'` para a estrela não voltar.
+
 ## Autenticação
 
 Cognito user pool `us-east-1_WoKQuKpZv`, tier Essentials, criação só por admin.

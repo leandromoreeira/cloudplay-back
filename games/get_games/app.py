@@ -5,6 +5,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import cors
 import game_progress
 from access_control import get_identity, get_accessible_game_ids
 
@@ -88,7 +89,7 @@ def lambda_handler(event, context):
             'statusCode': 200,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({
                 'data': paginated_items,
@@ -103,7 +104,7 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'error': 'Could not fetch games'})
         }

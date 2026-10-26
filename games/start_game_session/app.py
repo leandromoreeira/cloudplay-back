@@ -6,6 +6,7 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import cors
 import game_progress
 import team_role
 from account_manager import get_account_manager
@@ -26,7 +27,7 @@ def _response(status_code, body):
         'statusCode': status_code,
         'headers': {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': cors.allowed_origin()
         },
         'body': json.dumps(body)
     }

@@ -1,6 +1,7 @@
 import json
 
 # Import from Lambda Layer
+import cors
 from account_manager import get_account_manager
 from access_control import get_identity
 
@@ -21,7 +22,7 @@ def lambda_handler(event, context):
             'statusCode': 401,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({'message': 'Invalid or expired token'})
         }
@@ -56,7 +57,7 @@ def lambda_handler(event, context):
             'statusCode': 200,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps(response_data)
         }
@@ -67,7 +68,7 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': cors.allowed_origin()
             },
             'body': json.dumps({
                 'error': 'Failed to get account status',

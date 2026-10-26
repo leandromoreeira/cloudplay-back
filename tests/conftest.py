@@ -17,6 +17,8 @@ import pytest
 BACK = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACK / 'layers' / 'utils-layer'))
 
+ALLOWED_ORIGIN = 'https://frontend.example.com'
+
 # moto refuses to start without something that looks like credentials, and
 # picking up real ones here would be a lot worse than failing.
 os.environ.setdefault('AWS_DEFAULT_REGION', 'us-east-1')
@@ -24,6 +26,10 @@ os.environ.setdefault('AWS_ACCESS_KEY_ID', 'testing')
 os.environ.setdefault('AWS_SECRET_ACCESS_KEY', 'testing')
 os.environ.setdefault('AWS_SECURITY_TOKEN', 'testing')
 os.environ.setdefault('AWS_SESSION_TOKEN', 'testing')
+
+# Every handler reads this when it answers. A star here would let the
+# tests pass while production shipped one.
+os.environ.setdefault('ALLOWED_ORIGIN', ALLOWED_ORIGIN)
 
 ACCOUNTS_TABLE = 'test-Game-Accounts'
 GAMES_TABLE = 'test-Games'
