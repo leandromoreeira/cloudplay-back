@@ -60,6 +60,10 @@ def _access_table():
     return boto3.resource('dynamodb').Table(os.environ['GAME_ACCESS_TABLE'])
 
 
+def _games_table():
+    return boto3.resource('dynamodb').Table(os.environ['GAMES_TABLE'])
+
+
 def _attribute(user, name):
     for attribute in user.get('Attributes', user.get('UserAttributes', [])):
         if attribute['Name'] == name:
@@ -194,6 +198,34 @@ def reset_mfa(client, target):
     return _response(200, {'email': target, 'message': 'Authenticator reset'})
 
 
+def list_catalogue():
+    """
+    Every game there is, which is not the same list /games returns.
+
+    That one is filtered by the caller's own access, and an administrator
+    is not necessarily in full-access — the two groups are independent. An
+    admin granting games must see the ones they cannot play themselves.
+    """
+    games = []
+    kwargs = {'ProjectionExpression': 'id, title, category, difficulty'}
+
+    while True:
+        page = _games_table().scan(**kwargs)
+        games.extend(page.get('Items', []))
+
+        last = page.get('LastEvaluatedKey')
+        if not last:
+            break
+        kwargs['ExclusiveStartKey'] = last
+
+    def by_number(game):
+        digits = ''.join(c for c in str(game.get('id', '')) if c.isdigit())
+        return (int(digits) if digits else 0, str(game.get('id', '')))
+
+    games.sort(key=by_number)
+    return _response(200, {'games': games})
+
+
 def list_grants(target):
     items = _access_table().query(
         KeyConditionExpression=Key('user_email').eq(target)
@@ -248,6 +280,9 @@ def lambda_handler(event, context):
     client = _cognito()
 
     try:
+        if route == '/admin/games' and method == 'GET':
+            return list_catalogue()
+
         if route == '/admin/users':
             if method == 'GET':
                 return list_users(client)

@@ -240,11 +240,17 @@ aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
   --username leandro.lx3@gmail.com --group-name admin --profile personal
 ```
 
+`GET /admin/games` existe porque o `GET /games` normal é filtrado pelo acesso
+de quem chama: um admin fora do `full-access` veria um catálogo incompleto
+justamente na tela de conceder acesso. Devolve só `id`, `title`, `category` e
+`difficulty` — a tela desenha uma linha por game, e mandar o HTML de 160 games
+não serviria para nada.
+
 **Apagar usuário não existe de propósito**: desabilitar cobre o caso real e
 preserva o vínculo com as sessões históricas. Reset de senha também não — a
 recuperação por e-mail verificado é self-service desde a troca para TOTP.
 
-Uma Lambda (`admin_users`) atende as seis rotas de `/admin`, em vez de seis
+Uma Lambda (`admin_users`) atende as sete rotas de `/admin`, em vez de seis
 funções. É exceção ao padrão do repositório, por serem operações raras,
 coesas e com a mesma policy.
 

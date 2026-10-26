@@ -911,6 +911,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GamesTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow
@@ -930,6 +932,14 @@ Resources:
       Architectures:
         - x86_64
       Events:
+        ListCatalogue:
+          Type: Api
+          Properties:
+            Path: /admin/games
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
         ListUsers:
           Type: Api
           Properties:

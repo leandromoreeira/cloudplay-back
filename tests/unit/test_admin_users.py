@@ -17,7 +17,7 @@ PLAYER = 'player@example.com'
 
 
 @pytest.fixture
-def handler(user_pool, access_table):
+def handler(user_pool, access_table, games_table):
     return load_handler('admin_users')
 
 
@@ -278,3 +278,54 @@ def test_a_body_that_is_not_json_is_refused(handler, user_pool):
     event['body'] = 'not json'
 
     assert handler.lambda_handler(event, None)['statusCode'] == 400
+
+
+# --- the catalogue the grants page needs ------------------------------------
+
+def given_game(games_table, game_id, title='A game'):
+    games_table.put_item(Item={
+        'id': game_id, 'title': title, 'content': '<p>..</p>',
+        'category': 'Compute', 'difficulty': 'Hard',
+        'tasks': [{'id': 'task1', 'title': 'One', 'content': ''}],
+    })
+
+
+def test_the_catalogue_lists_every_game_in_order(handler, user_pool, games_table):
+    for game_id in ('game10', 'game2', 'game1'):
+        given_game(games_table, game_id)
+
+    body = body_of(handler.lambda_handler(a_request('/admin/games', 'GET'), None))
+
+    # Numeric order, like the player's catalogue: as text game10 would sit
+    # between game1 and game2.
+    assert [g['id'] for g in body['games']] == ['game1', 'game2', 'game10']
+
+
+def test_the_catalogue_ignores_the_admins_own_access(handler, user_pool, games_table, access_table):
+    given_game(games_table, 'game1')
+    given_game(games_table, 'game2')
+
+    # The caller is in admin and nothing else, with no grants of their own.
+    # Granting games they cannot play themselves is the normal case.
+    body = body_of(handler.lambda_handler(a_request('/admin/games', 'GET'), None))
+
+    assert len(body['games']) == 2
+
+
+def test_the_catalogue_carries_only_what_the_page_shows(handler, user_pool, games_table):
+    given_game(games_table, 'game1')
+
+    body = body_of(handler.lambda_handler(a_request('/admin/games', 'GET'), None))
+
+    # Not the task list and not the HTML body: this page draws a row per
+    # game, and the content of 160 games is a lot to send for nothing.
+    assert set(body['games'][0]) == {'id', 'title', 'category', 'difficulty'}
+
+
+def test_a_player_cannot_read_the_whole_catalogue_here(handler, user_pool, games_table):
+    given_game(games_table, 'game1')
+
+    response = handler.lambda_handler(
+        a_request('/admin/games', 'GET', groups='[full-access]', caller=PLAYER), None)
+
+    assert response['statusCode'] == 403
