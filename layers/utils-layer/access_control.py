@@ -6,6 +6,10 @@ Games are private by default:
 - Everyone else needs an explicit grant in the GameAccess table
   (one item per user_email/game_id pair).
 
+The "admin" group is separate and orthogonal: it opens the admin area and
+grants nothing in the catalogue. An administrator who should also play
+every game belongs to both groups.
+
 Identity comes from the claims the API Gateway Cognito authorizer attaches
 to the request (already signature-verified by API Gateway), not from a
 manual JWT decode.
@@ -15,6 +19,7 @@ import os
 import boto3
 
 FULL_ACCESS_GROUP = "full-access"
+ADMIN_GROUP = "admin"
 
 
 def get_identity(event):
@@ -35,6 +40,17 @@ def get_identity(event):
 
 def has_full_access(groups):
     return FULL_ACCESS_GROUP in groups
+
+
+def is_admin(groups):
+    """
+    Whether this user may manage other users.
+
+    Deliberately says nothing about the catalogue: administering the
+    platform and being allowed to play every game are two separate grants,
+    so an admin who should also see every game is put in both groups.
+    """
+    return ADMIN_GROUP in groups
 
 
 def _access_table():

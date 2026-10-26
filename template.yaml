@@ -874,6 +874,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${StackEventsFunction}"
       RetentionInDays: !Ref LogRetentionDays
 
+  AdminUsersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AdminUsersFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
   ConsoleAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -888,6 +894,91 @@ Resources:
       LogGroupName: !Sub "/aws/codebuild/${AWS::StackName}-account-cleanup"
       RetentionInDays: !Ref LogRetentionDays
 
+  # One function behind every /admin route. These operations are rare and
+  # share a policy; six functions would have been six log groups and six
+  # copies of the same Cognito permissions for no gain.
+  AdminUsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/admin_users/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref CognitoUserPool
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameAccessTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminEnableUser
+                - cognito-idp:AdminDisableUser
+                - cognito-idp:AdminListGroupsForUser
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+                - cognito-idp:AdminSetUserMFAPreference
+              # This pool and no other. Deleting a user is deliberately not
+              # here: disabling covers the real case and keeps the history.
+              Resource: !GetAtt CognitoUserPool.Arn
+      Architectures:
+        - x86_64
+      Events:
+        ListUsers:
+          Type: Api
+          Properties:
+            Path: /admin/users
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        CreateUser:
+          Type: Api
+          Properties:
+            Path: /admin/users
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        UpdateUser:
+          Type: Api
+          Properties:
+            Path: /admin/users/{email}
+            Method: patch
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        ResetMfa:
+          Type: Api
+          Properties:
+            Path: /admin/users/{email}/reset-mfa
+            Method: post
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        ListGrants:
+          Type: Api
+          Properties:
+            Path: /admin/users/{email}/games
+            Method: get
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        SetGrants:
+          Type: Api
+          Properties:
+            Path: /admin/users/{email}/games
+            Method: put
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
   RestApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -895,7 +986,7 @@ Resources:
       EndpointConfiguration:
         Type: REGIONAL
       Cors:
-        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowMethods: "'GET,POST,PATCH,PUT,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
         AllowOrigin: !If
           - UseOwnFrontend
@@ -1043,6 +1134,16 @@ Resources:
       UserPoolId: !Ref CognitoUserPool
       GroupName: full-access
       Description: Users who can see and play every game, bypassing per-game access grants
+
+  # Separate from full-access on purpose: administering the platform and
+  # being allowed to play every game are two grants. An administrator who
+  # should also see the whole catalogue belongs to both groups.
+  AdminUserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      GroupName: admin
+      Description: Users who can manage other users and open the admin area
 
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient

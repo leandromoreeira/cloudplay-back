@@ -27,6 +27,7 @@ conferir o nuke, emergências de MFA) estão em **`docs/RUNBOOK.md`**.
 | Pool de contas e seu estado | DynamoDB `aws-jam-Game-Accounts` |
 | Progresso do aluno por game | DynamoDB `aws-jam-Game-Progress` |
 | Quem pode jogar o quê | DynamoDB `aws-jam-Game-Access` + grupo Cognito `full-access` |
+| Quem administra | grupo Cognito `admin` |
 | Templates, validators, artefatos | S3 `cloudraiser-673000199571`, publicados pelo `tools/sync_s3.sh` do repo de games — **não há script de upload aqui** |
 | Infra da aplicação | Stack SAM `aws-jam` (`template.yaml`) |
 | Governança: OU, SCPs, budget | Stack `cloudplay-org` (`org/organization.yaml`), **deploy manual** |
@@ -211,6 +212,41 @@ Cognito user pool `us-east-1_WoKQuKpZv`, tier Essentials, criação só por admi
 - Recuperação de senha por e-mail verificado, com o remetente padrão do Cognito.
 - Aluno perdeu o celular: `admin-set-user-mfa-preference` com
   `Enabled=false` força novo cadastro no próximo login.
+
+## Os dois grupos do Cognito
+
+São **independentes**, e isso é deliberado:
+
+| Grupo | Dá |
+|---|---|
+| `full-access` | ver e jogar todos os games, sem grant por game |
+| `admin` | a área `/admin` e a gestão de usuários — **nada** no catálogo |
+
+Quem administra e também precisa ver tudo entra **nos dois**. A UI de criação
+lembra disso, mas o backend não infere um do outro.
+
+O `admin` é verificado no backend em toda rota `/admin/*` (`is_admin` em
+`access_control.py`). Esconder o botão no front não é controle.
+
+Duas travas que existem para não haver tranca sem chave: **ninguém se
+desabilita** e **ninguém tira o próprio `admin`**. O último admin fazendo
+qualquer uma das duas deixaria a CLI como único caminho de volta.
+
+O primeiro admin entra na mão — o CloudFormation cria o grupo, não a
+associação:
+
+```bash
+aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
+  --username leandro.lx3@gmail.com --group-name admin --profile personal
+```
+
+**Apagar usuário não existe de propósito**: desabilitar cobre o caso real e
+preserva o vínculo com as sessões históricas. Reset de senha também não — a
+recuperação por e-mail verificado é self-service desde a troca para TOTP.
+
+Uma Lambda (`admin_users`) atende as seis rotas de `/admin`, em vez de seis
+funções. É exceção ao padrão do repositório, por serem operações raras,
+coesas e com a mesma policy.
 
 ## Acesso ao console AWS pelo aluno
 

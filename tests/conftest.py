@@ -18,6 +18,7 @@ BACK = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACK / 'layers' / 'utils-layer'))
 
 ALLOWED_ORIGIN = 'https://frontend.example.com'
+USER_POOL_NAME = 'test-user-pool'
 
 # moto refuses to start without something that looks like credentials, and
 # picking up real ones here would be a lot worse than failing.
@@ -219,3 +220,38 @@ def sent_emails():
 
     region = os.environ['AWS_DEFAULT_REGION']
     return ses_backends[DEFAULT_ACCOUNT_ID][region].sent_messages
+
+
+@pytest.fixture
+def user_pool(aws, monkeypatch):
+    """A Cognito pool with the two groups the real one has."""
+    import boto3
+
+    client = boto3.client('cognito-idp')
+    pool_id = client.create_user_pool(PoolName=USER_POOL_NAME)['UserPool']['Id']
+    monkeypatch.setenv('USER_POOL_ID', pool_id)
+
+    for group in ('full-access', 'admin'):
+        client.create_group(UserPoolId=pool_id, GroupName=group)
+
+    return pool_id
+
+
+def given_user(pool_id, email, groups=(), enabled=True):
+    """A confirmed user in the pool, in the groups named."""
+    import boto3
+
+    client = boto3.client('cognito-idp')
+    client.admin_create_user(
+        UserPoolId=pool_id,
+        Username=email,
+        UserAttributes=[{'Name': 'email', 'Value': email}],
+    )
+    for group in groups:
+        client.admin_add_user_to_group(
+            UserPoolId=pool_id, Username=email, GroupName=group
+        )
+    if not enabled:
+        client.admin_disable_user(UserPoolId=pool_id, Username=email)
+
+    return email

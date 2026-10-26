@@ -120,12 +120,22 @@ aws cognito-idp set-user-pool-mfa-config --user-pool-id us-east-1_WoKQuKpZv \
   --mfa-configuration OFF --profile personal
 ```
 
-**Aluno perdeu o celular:**
+**Aluno perdeu o celular:** pela área `/admin`, botão da chave na linha dele.
+Na mão, se o front estiver fora do ar:
 
 ```bash
 aws cognito-idp admin-set-user-mfa-preference --user-pool-id us-east-1_WoKQuKpZv \
   --username <email> --software-token-mfa-settings Enabled=false,PreferredMfa=false \
   --profile personal
+```
+
+**Ninguém consegue entrar em `/admin`:** acontece se o último admin perder o
+grupo. As duas travas do backend impedem isso por acidente, mas a recuperação
+é sempre a mesma:
+
+```bash
+aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
+  --username <email> --group-name admin --profile personal
 ```
 
 **Reverter a policy do bucket de artefatos:** a versão vigente está descrita no
