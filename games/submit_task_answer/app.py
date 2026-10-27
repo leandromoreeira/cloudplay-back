@@ -188,6 +188,32 @@ def lambda_handler(event, context):
             # Parse the response from validate_task lambda
             response_payload = json.loads(response['Payload'].read())
 
+            # A 200 means the invocation arrived, not that the check ran.
+            # When validate_taskN raises, Lambda still answers 200 and puts
+            # the signal in FunctionError; the payload is a stack trace, so
+            # `completed` reads False and `message` falls back to its
+            # default. The player was being told "Not yet complete" about a
+            # broken game and kept answering against it.
+            if response.get('FunctionError'):
+                print(
+                    f"{validate_function_name} failed in {account_id or 'local'}: "
+                    f"{response_payload}"
+                )
+                return {
+                    'statusCode': 502,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': cors.allowed_origin()
+                    },
+                    'body': json.dumps({
+                        'message': (
+                            'The check for this task could not run. This is a '
+                            'problem with the game, not with your answer.'
+                        ),
+                        'details': response_payload.get('errorMessage'),
+                    })
+                }
+
             if response.get('StatusCode') == 200:
                 # Extract validation results
                 completed = response_payload.get('completed', False)

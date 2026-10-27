@@ -29,6 +29,9 @@ class FakeLambda:
             'completed': True, 'message': 'Well done', 'progressPercent': 100,
         }
         self.error = error
+        # Set to mimic a validator that raised: Lambda answers 200 with the
+        # stack trace as the payload and the real signal in this field.
+        self.function_error = None
         self.invocations = []
 
     def invoke(self, FunctionName, InvocationType, Payload):
@@ -38,10 +41,13 @@ class FakeLambda:
         })
         if self.error:
             raise self.error
-        return {
+        answer = {
             'StatusCode': 200,
             'Payload': io.BytesIO(json.dumps(self.payload).encode()),
         }
+        if self.function_error:
+            answer['FunctionError'] = self.function_error
+        return answer
 
 
 @pytest.fixture
@@ -409,3 +415,48 @@ def test_a_missing_answer_reaches_the_validator_as_a_string(
     # Validators are written expecting a string; null would reach them as
     # None and break ones that call .strip() on it.
     assert validator.invocations[0]['payload']['userInput'] == ''
+
+
+# --- a validator that breaks is not a wrong answer --------------------------
+
+def broken(validator):
+    """A validator that raised, as Lambda reports it."""
+    validator.function_error = 'Unhandled'
+    validator.payload = {
+        'errorMessage': "name 'boto4' is not defined",
+        'errorType': 'NameError',
+        'stackTrace': ['...'],
+    }
+
+
+def test_a_validator_that_raises_is_reported_as_the_games_fault(
+    handler, sessions_table, games_table, validator
+):
+    given_session(sessions_table)
+    given_game(games_table)
+    broken(validator)
+
+    response = handler.lambda_handler(a_request(task_id='task1'), None)
+
+    # It used to come back as "Not yet complete" with a generic message, so
+    # the player kept answering against a game that could not answer back.
+    assert response['statusCode'] == 502
+    body = body_of(response)
+    assert 'not with your answer' in body['message']
+    assert body['details'] == "name 'boto4' is not defined"
+
+
+def test_a_broken_validator_records_no_progress(
+    handler, sessions_table, games_table, progress_table, validator
+):
+    given_session(sessions_table)
+    given_game(games_table)
+    broken(validator)
+
+    handler.lambda_handler(a_request(task_id='task1'), None)
+
+    stored = sessions_table.get_item(Key={'session_id': SESSION_ID})['Item']
+    assert stored['completed_tasks'] == {}
+    assert 'Item' not in progress_table.get_item(
+        Key={'user_email': PLAYER, 'game_id': GAME_ID}
+    )
