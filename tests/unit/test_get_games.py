@@ -189,3 +189,71 @@ def test_replaying_a_finished_game_shows_as_in_progress(handler, games_table, pr
     body = listed(handler.lambda_handler(a_request(), None))
 
     assert body['data'][0]['progress']['status'] == 'in_progress'
+
+
+# --- filtering by where the player stands -----------------------------------
+
+@pytest.fixture
+def a_played_catalogue(handler, games_table, progress_table):
+    """game1 in progress, game2 finished, game3 never touched."""
+    import game_progress
+
+    given_games(games_table, a_game('game1'), a_game('game2'), a_game('game3'))
+    game_progress.mark_playing(PLAYER, 'game1', 'session-1')
+    game_progress.mark_completed(PLAYER, 'game2')
+    game_progress.mark_not_playing(PLAYER, 'game2')
+    return handler
+
+
+@pytest.mark.parametrize('status, expected', [
+    ('in_progress', ['game1']),
+    ('done', ['game2']),
+    ('todo', ['game3']),
+])
+def test_each_status_returns_only_its_own(a_played_catalogue, status, expected):
+    response = a_played_catalogue.lambda_handler(a_request(status=status), None)
+
+    assert ids_in(response) == expected
+
+
+def test_the_totals_describe_the_filtered_list(a_played_catalogue):
+    body = listed(a_played_catalogue.lambda_handler(a_request(status='done'), None))
+
+    # Filtering after paging would have left the counts describing a list
+    # the player cannot see, and pages arriving short.
+    assert body['totalItems'] == 1
+    assert body['totalPages'] == 1
+    assert len(body['data']) == 1
+
+
+def test_a_game_never_touched_counts_as_todo(a_played_catalogue):
+    # There is no progress row for game3 at all; the absence is the answer.
+    assert ids_in(a_played_catalogue.lambda_handler(a_request(status='todo'), None)) == ['game3']
+
+
+def test_the_status_filter_combines_with_the_others(handler, games_table, progress_table):
+    import game_progress
+
+    given_games(
+        games_table,
+        a_game('game1', difficulty='Hard'),
+        a_game('game2', difficulty='Easy'),
+    )
+    game_progress.mark_completed(PLAYER, 'game1')
+    game_progress.mark_completed(PLAYER, 'game2')
+    game_progress.mark_not_playing(PLAYER, 'game1')
+    game_progress.mark_not_playing(PLAYER, 'game2')
+
+    response = handler.lambda_handler(a_request(status='done', difficulty='Hard'), None)
+
+    assert ids_in(response) == ['game1']
+
+
+def test_a_status_that_does_not_exist_is_refused(handler, games_table):
+    given_games(games_table, a_game('game1'))
+
+    response = handler.lambda_handler(a_request(status='finished'), None)
+
+    # An unknown value would otherwise come back as an empty catalogue and
+    # read like "you have played nothing".
+    assert response['statusCode'] == 400

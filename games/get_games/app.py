@@ -12,6 +12,10 @@ from access_control import get_identity, get_accessible_game_ids
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ['GAMES_TABLE'])
 
+PROGRESS_STATUSES = frozenset(
+    (game_progress.TODO, game_progress.IN_PROGRESS, game_progress.DONE)
+)
+
 def lambda_handler(event, context):
     email, groups = get_identity(event)
     accessible_game_ids = get_accessible_game_ids(email, groups)
@@ -23,6 +27,19 @@ def lambda_handler(event, context):
     category = query_params.get('category')
     difficulty = query_params.get('difficulty')
     order = query_params.get('order', 'desc').lower()  # Default to desc
+    status = query_params.get('status')
+
+    if status and status not in PROGRESS_STATUSES:
+        return {
+            'statusCode': 400,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': cors.allowed_origin()
+            },
+            'body': json.dumps({
+                'message': f"status must be one of {', '.join(sorted(PROGRESS_STATUSES))}"
+            })
+        }
 
     scan_kwargs = {}
     filter_expression = []
@@ -67,6 +84,19 @@ def lambda_handler(event, context):
                 # Fallback to string sorting if no number found
                 return (game_id.lower(), 0)
 
+        # One query covers every game this player has touched; anything it
+        # does not mention has never been started, which is the default.
+        statuses = game_progress.statuses_for(email)
+
+        # Filtered here rather than after paging, so the totals describe the
+        # list the player is actually looking at and no page comes back
+        # short because its rows were dropped afterwards.
+        if status:
+            items = [
+                item for item in items
+                if statuses.get(item.get('id'), game_progress.TODO) == status
+            ]
+
         reverse_order = order == 'desc'
         items.sort(key=sort_key, reverse=reverse_order)
 
@@ -77,9 +107,6 @@ def lambda_handler(event, context):
         end_index = start_index + page_size
         paginated_items = items[start_index:end_index]
 
-        # One query covers every game this player has touched; anything it
-        # does not mention has never been started, which is the default.
-        statuses = game_progress.statuses_for(email)
         for item in paginated_items:
             item['progress'] = {
                 'status': statuses.get(item.get('id'), game_progress.TODO)

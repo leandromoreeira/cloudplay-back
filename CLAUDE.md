@@ -240,6 +240,11 @@ aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
   --username leandro.lx3@gmail.com --group-name admin --profile personal
 ```
 
+`GET /games` aceita `status=todo|in_progress|done`. O filtro é aplicado
+**antes da paginação**, junto do filtro de acesso, senão os totais descrevem
+uma lista que o aluno não vê e páginas chegam curtas. Valor desconhecido é
+400: devolver vazio pareceria "você não jogou nada".
+
 `GET /admin/games` existe porque o `GET /games` normal é filtrado pelo acesso
 de quem chama: um admin fora do `full-access` veria um catálogo incompleto
 justamente na tela de conceder acesso. Devolve só `id`, `title`, `category` e
@@ -354,6 +359,11 @@ Não "conserte" estas sem ler o motivo:
   livre com id de sessão parece ocupada.
 - **`cleanup_result` casa a sessão pelo id do build**, não pela conta: uma conta
   já rodou dezenas de sessões.
+- **`submit_task_answer` checa `FunctionError` antes do `StatusCode`.** O
+  `Invoke` devolve 200 mesmo quando a função lança; o payload vira stack
+  trace, `completed` lê `False` e a mensagem cai no default. Sem essa
+  checagem o aluno recebe "Not yet complete" sobre um game quebrado e fica
+  tentando. Agora é 502 dizendo que o problema não é a resposta dele.
 - **A revogação do console só acontece depois do `mark_cleaning`.** Antes disso
   a conta poderia já ser de outra pessoa.
 - **`mark_playing` é a última coisa do `start_game_session`.** Antes do
