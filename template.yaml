@@ -880,6 +880,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${AdminUsersFunction}"
       RetentionInDays: !Ref LogRetentionDays
 
+  AnalyticsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AnalyticsFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
   ConsoleAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -985,6 +991,33 @@ Resources:
           Properties:
             Path: /admin/users/{email}/games
             Method: put
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  AnalyticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: games/analytics/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Layers:
+        - !Ref UtilsLayer
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameSessionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameProgressTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GamesTable
+      Architectures:
+        - x86_64
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /analytics
+            Method: get
             RestApiId: !Ref RestApi
             Auth:
               Authorizer: CognitoAuthorizer

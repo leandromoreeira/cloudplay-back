@@ -213,6 +213,26 @@ Cognito user pool `us-east-1_WoKQuKpZv`, tier Essentials, criação só por admi
 - Aluno perdeu o celular: `admin-set-user-mfa-preference` com
   `Enabled=false` força novo cadastro no próximo login.
 
+## Analytics
+
+`GET /analytics` — sem parâmetro devolve os dados de quem chama; admin recebe
+os de todos. `?user=<email>` é só para admin (um aluno pedindo outro leva
+403). O escopo é decidido no backend, não escondendo controle na tela.
+
+Tudo é derivado na leitura, de linhas que outro código já grava: a sessão sabe
+quando começou, quando acabou, por que acabou e quais tasks fecharam dentro
+dela, com quantos segundos cada uma. As conclusões de game vêm da
+`Game-Progress`, não das sessões — um game fechado semana passada continua
+fechado, e refazê-lo não conta duas vezes.
+
+Duas ausências deliberadas: **tentativas** (nada registra resposta errada, então
+"quantas vezes errou" não é respondível e não é chutado) e **histórico antigo**
+— as 320 sessões de teste anteriores a out/2026 foram apagadas em 27/10/2026,
+então as séries começam ali.
+
+O `per_task` é o que justifica a tela: mediana de tempo por task. O primeiro
+dado real já mostrou um game com task1 em 30min e task2 em 1min19s.
+
 ## Os dois grupos do Cognito
 
 São **independentes**, e isso é deliberado:
