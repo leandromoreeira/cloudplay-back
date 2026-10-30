@@ -257,7 +257,8 @@ então as séries começam ali.
   `unfinished`. `completed` significa **todas as tasks do game concluídas
   naquela sessão**, não "apertou parar".
 
-Estavam na mesma coluna e isso era enganoso: uma limpeza que falhou depois não
+O `ending` de cada sessão só vai para admin, numa coluna própria. Estavam na
+mesma coluna e isso era enganoso: uma limpeza que falhou depois não
 diz nada sobre como o aluno foi, e uma sessão que o janitor fechou diz só que
 ele foi embora. Nenhuma das duas é um veredito sobre ele.
 

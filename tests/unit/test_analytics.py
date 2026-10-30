@@ -395,3 +395,29 @@ def test_the_recent_list_carries_the_player_facing_outcome(handler, sessions_tab
 
     assert [r['outcome'] for r in rows] == ['completed', 'unfinished']
     assert [r['tasks_total'] for r in rows] == [2, 2]
+
+
+# --- how the platform closed it is operator detail --------------------------
+
+def test_an_admin_is_told_how_each_session_was_closed(handler, sessions_table):
+    given_sessions(
+        sessions_table,
+        a_session(start='2026-10-25T09:00:00Z', reason='expired by janitor after 3.2h'),
+        a_session(start='2026-10-25T08:00:00Z', status='CLEANUP_FAILED'),
+        a_session(start='2026-10-25T07:00:00Z'),
+    )
+
+    rows = body_of(handler.lambda_handler(
+        a_request(caller=ADMIN, groups='[admin]'), None))['recent']
+
+    assert [r['ending'] for r in rows] == ['expired', 'cleanup_failed', 'ended']
+
+
+def test_a_player_is_not_told_about_the_plumbing(handler, sessions_table):
+    given_sessions(sessions_table, a_session(status='CLEANUP_FAILED'))
+
+    rows = body_of(handler.lambda_handler(a_request(), None))['recent']
+
+    # A failed wipe is not theirs to read, and it is not about them.
+    assert 'ending' not in rows[0]
+    assert rows[0]['outcome'] in ('completed', 'unfinished')

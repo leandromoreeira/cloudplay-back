@@ -236,14 +236,21 @@ def per_user(sessions, finished_pairs):
     return out
 
 
-def recent(sessions, titles, task_counts=None, limit=25):
-    """The latest sessions, newest first, as the screen lists them."""
+def recent(sessions, titles, task_counts=None, limit=25, with_ending=False):
+    """
+    The latest sessions, newest first, as the screen lists them.
+
+    with_ending adds how the platform closed each one — expired, cleanup
+    failed, closed cleanly. That is operator detail and is only asked for by
+    an administrator; a player is told what happened to them and nothing
+    about the plumbing underneath.
+    """
     counts = task_counts or {}
     ordered = sorted(
         sessions, key=lambda s: s.get('start_time') or '', reverse=True
     )[:limit]
 
-    return [{
+    rows = [{
         'game_id': s.get('game_id'),
         'title': titles.get(s.get('game_id'), s.get('game_id')),
         'user': s.get('user_name'),
@@ -252,4 +259,7 @@ def recent(sessions, titles, task_counts=None, limit=25):
         'outcome': outcome(s, counts.get(s.get('game_id'))),
         'tasks_completed': len(completed_tasks(s)),
         'tasks_total': counts.get(s.get('game_id')),
+        **({'ending': ending(s)} if with_ending else {}),
     } for s in ordered]
+
+    return rows

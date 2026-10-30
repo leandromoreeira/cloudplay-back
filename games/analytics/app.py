@@ -178,7 +178,8 @@ def lambda_handler(event, context):
         'summary': analytics.summarise(sessions, len(finished)),
         'per_game': analytics.per_game(sessions, titles, finished),
         'per_task': analytics.per_task(sessions, titles),
-        'recent': analytics.recent(sessions, titles, task_counts),
+        'recent': analytics.recent(sessions, titles, task_counts,
+                                   with_ending=admin),
     }
 
     if admin:
