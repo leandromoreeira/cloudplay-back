@@ -232,7 +232,11 @@ Cognito user pool `us-east-1_WoKQuKpZv`, tier Essentials, criação só por admi
 
 `GET /analytics` — sem parâmetro devolve os dados de quem chama; admin recebe
 os de todos. `?user=<email>` é só para admin (um aluno pedindo outro leva
-403). O escopo é decidido no backend, não escondendo controle na tela.
+403) e `?game=<id>` recorta por game; os dois combinam.
+
+**O recorte por game nunca alarga quem aparece.** Ele é aplicado depois de o
+escopo estar resolvido, então um aluno abrindo a tela de um game vê as sessões
+**dele** naquele game, não as da turma. Tem teste.
 
 Tudo é derivado na leitura, de linhas que outro código já grava: a sessão sabe
 quando começou, quando acabou, por que acabou e quais tasks fecharam dentro

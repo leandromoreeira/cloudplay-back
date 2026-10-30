@@ -258,3 +258,79 @@ def test_titles_come_from_the_catalogue(handler, sessions_table, games_table):
     body = body_of(handler.lambda_handler(a_request(), None))
 
     assert body['per_game'][0]['title'] == 'Where are my nodes'
+
+
+# --- drilling into one game -------------------------------------------------
+
+def test_a_game_can_be_asked_about_on_its_own(handler, sessions_table):
+    given_sessions(sessions_table,
+                   a_session(game_id='game1'), a_session(game_id='game2'))
+
+    body = body_of(handler.lambda_handler(
+        a_request(caller=ADMIN, groups='[admin]'), None))
+    assert body['summary']['sessions'] == 2
+
+    narrowed = body_of(handler.lambda_handler(
+        {**a_request(caller=ADMIN, groups='[admin]'),
+         'queryStringParameters': {'game': 'game1'}}, None))
+
+    assert narrowed['game'] == 'game1'
+    assert narrowed['summary']['sessions'] == 1
+    assert [r['game_id'] for r in narrowed['per_game']] == ['game1']
+
+
+def test_a_player_drilling_into_a_game_still_sees_only_their_own(handler, sessions_table):
+    given_sessions(sessions_table,
+                   a_session(user=PLAYER, game_id='game1'),
+                   a_session(user=OTHER, game_id='game1'),
+                   a_session(user=OTHER, game_id='game1'))
+
+    body = body_of(handler.lambda_handler(
+        {**a_request(), 'queryStringParameters': {'game': 'game1'}}, None))
+
+    # Narrowing by game must never widen who is visible. Three sessions of
+    # that game exist; one of them is theirs.
+    assert body['summary']['sessions'] == 1
+    assert {r['user'] for r in body['recent']} == {PLAYER}
+    assert 'per_user' not in body
+
+
+def test_an_admin_can_narrow_to_one_student_in_one_game(handler, sessions_table):
+    given_sessions(sessions_table,
+                   a_session(user=PLAYER, game_id='game1'),
+                   a_session(user=PLAYER, game_id='game2'),
+                   a_session(user=OTHER, game_id='game1'))
+
+    body = body_of(handler.lambda_handler(
+        {**a_request(caller=ADMIN, groups='[admin]'),
+         'queryStringParameters': {'user': PLAYER, 'game': 'game1'}}, None))
+
+    assert body['user'] == PLAYER and body['game'] == 'game1'
+    assert body['summary']['sessions'] == 1
+
+
+def test_completions_are_narrowed_with_the_game(handler, sessions_table, progress_table):
+    given_sessions(sessions_table,
+                   a_session(user=PLAYER, game_id='game1'),
+                   a_session(user=PLAYER, game_id='game2'))
+    for game_id in ('game1', 'game2'):
+        progress_table.put_item(Item={
+            'user_email': PLAYER, 'game_id': game_id,
+            'ever_completed_at': '2026-10-25T11:00:00Z',
+        })
+
+    body = body_of(handler.lambda_handler(
+        {**a_request(), 'queryStringParameters': {'game': 'game1'}}, None))
+
+    # Two games finished overall, one of them this one.
+    assert body['summary']['games_completed'] == 1
+
+
+def test_a_game_nobody_played_comes_back_empty_rather_than_wrong(handler, sessions_table):
+    given_sessions(sessions_table, a_session(game_id='game1'))
+
+    body = body_of(handler.lambda_handler(
+        {**a_request(), 'queryStringParameters': {'game': 'game999'}}, None))
+
+    assert body['summary']['sessions'] == 0
+    assert body['per_game'] == [] and body['recent'] == []

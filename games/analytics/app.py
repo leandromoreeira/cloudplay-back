@@ -104,6 +104,7 @@ def lambda_handler(event, context):
 
     params = event.get('queryStringParameters') or {}
     wanted = (params.get('user') or '').strip().lower() or None
+    game = (params.get('game') or '').strip() or None
     admin = is_admin(groups)
 
     # A player may ask about themselves and nobody else, however the URL
@@ -121,9 +122,17 @@ def lambda_handler(event, context):
         print(f"Could not read the analytics data: {e}")
         return _response(500, {'message': 'Could not read the numbers'})
 
+    # Narrowing to one game happens after the scope is settled, never
+    # instead of it: a player drilling into a game still sees only their own
+    # sessions of it.
+    if game:
+        sessions = [s for s in sessions if s.get('game_id') == game]
+        finished = [pair for pair in finished if pair[0] == game]
+
     body = {
         'scope': 'user' if wanted else 'all',
         'user': wanted,
+        'game': game,
         'summary': analytics.summarise(sessions, len(finished)),
         'per_game': analytics.per_game(sessions, titles, finished),
         'per_task': analytics.per_task(sessions, titles),
