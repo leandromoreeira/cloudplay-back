@@ -100,6 +100,24 @@ Parameters:
       one case: pointing a local dev server at the deployed API, where you
       would set it to http://localhost:8080 for as long as that lasts.
 
+  MaxCleanupAttempts:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: >
+      How many times a wipe may fail before a person is asked to look. Below
+      that it is retried by the janitor, because the usual reason is AWS not
+      having released something yet rather than a broken account.
+
+  RetryCleanupAfterMinutes:
+    Type: Number
+    Default: 15
+    MinValue: 1
+    Description: >
+      How long to leave a failed wipe alone before trying again. An ENI left
+      by a Lambda in a VPC takes tens of minutes to be released, and until it
+      is, the security group, the subnet and the VPC behind it cannot go.
+
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -551,13 +569,18 @@ Resources:
                     printf '\nbypass-alias-check-accounts:\n  - "%s"\n' "$TARGET_ACCOUNT"
                   } > /tmp/nuke.yaml
             build:
+              # Two retries, not five. Anything still held after that is
+              # being released by AWS on its own schedule, and the janitor
+              # starts a fresh build later — waiting here means paying for a
+              # container to sleep, which is how three 40-minute builds cost
+              # more than the sessions they were cleaning up after.
               commands:
                 - |
                   aws-nuke run -c /tmp/nuke.yaml \
                     --assume-role-arn "arn:aws:iam::${TARGET_ACCOUNT}:role/${GAME_ACCOUNT_ROLE_NAME}" \
                     --default-region us-east-1 \
                     --no-alias-check --no-prompt --no-dry-run \
-                    --max-wait-retries 5 --quiet
+                    --max-wait-retries 2 --quiet
 
   AccountCleanupRole:
     Type: AWS::IAM::Role
@@ -673,6 +696,9 @@ Resources:
   CleanupResultFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Environment:
+        Variables:
+          MAX_CLEANUP_ATTEMPTS: !Sub "${MaxCleanupAttempts}"
       CodeUri: games/cleanup_result/
       Handler: app.lambda_handler
       Runtime: python3.9
@@ -726,6 +752,8 @@ Resources:
         Variables:
           CLEANUP_PROJECT_NAME: !Ref AccountCleanupProject
           MAX_SESSION_HOURS: !Sub "${MaxSessionHours}"
+          MAX_CLEANUP_ATTEMPTS: !Sub "${MaxCleanupAttempts}"
+          RETRY_CLEANUP_AFTER_MINUTES: !Sub "${RetryCleanupAfterMinutes}"
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameProgressTable

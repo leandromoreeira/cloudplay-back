@@ -138,6 +138,19 @@ aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
   --username <email> --group-name admin --profile personal
 ```
 
+**Conta em QUARANTINED depois de 3 tentativas:** aí é algo realmente preso, não
+lentidão. O caminho é olhar o log do build
+(`/aws/codebuild/aws-jam-account-cleanup`) e achar o recurso que o nuke não
+consegue apagar. Em 30/10/2026 uma VPC ficou assim com **todas** as
+dependências enumeráveis zeradas — subnets, SGs, ENIs, endpoints dos dois
+lados, peering, gateways, ELBs. Nesse caso o **console** é melhor que a API: o
+diálogo de delete da VPC lista a dependência que está bloqueando, que a API não
+devolve. Depois de limpar na mão:
+
+```bash
+python scripts/manage_accounts.py set-status --account-id <id> --status AVAILABLE
+```
+
 **Reverter a policy do bucket de artefatos:** a versão vigente está descrita no
 `CLAUDE.md` do `cloudraiser-games`. Para ver a atual:
 

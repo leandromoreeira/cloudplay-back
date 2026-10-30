@@ -21,6 +21,14 @@ from account_manager import get_account_manager
 
 MAX_SESSION_HOURS = float(os.environ.get('MAX_SESSION_HOURS', '3'))
 
+# A failed wipe is retried from here rather than from inside the build.
+# Waiting for AWS to release an ENI is waiting, and doing it inside a
+# CodeBuild container means paying by the minute to sleep; this function
+# already wakes up on a schedule and costs the same whether it finds
+# anything or not.
+RETRY_CLEANUP_AFTER_MINUTES = float(os.environ.get('RETRY_CLEANUP_AFTER_MINUTES', '15'))
+MAX_CLEANUP_ATTEMPTS = int(os.environ.get('MAX_CLEANUP_ATTEMPTS', '3'))
+
 
 def _started_at(session):
     """
@@ -50,6 +58,54 @@ def _active_sessions(table):
         if not last_key:
             return
         kwargs['ExclusiveStartKey'] = last_key
+
+
+def _retry_cleanups(account_manager, now):
+    """
+    Start another wipe on accounts whose last one failed.
+
+    cleanup_failed_at is only written once a build has finished and failed,
+    so nothing here can collide with an attempt still running.
+    """
+    retried, quarantined = [], []
+
+    for account in account_manager.cleanups_awaiting_retry():
+        account_id = account['account_id']
+        failed_at = _started_at({'start_time': account.get('cleanup_failed_at')})
+
+        if failed_at is None:
+            print(f"Account {account_id} has an unreadable cleanup_failed_at, leaving it")
+            continue
+
+        waited = (now - failed_at).total_seconds() / 60
+        if waited < RETRY_CLEANUP_AFTER_MINUTES:
+            continue
+
+        attempts = int(account.get('cleanup_attempts', 0))
+        if attempts >= MAX_CLEANUP_ATTEMPTS:
+            # Out of patience: something is genuinely stuck rather than
+            # slow, and that needs a person.
+            account_manager.mark_quarantined(
+                account_id,
+                f"cleanup still failing after {attempts} attempts"
+            )
+            quarantined.append(account_id)
+            continue
+
+        try:
+            # Cleared first: if the build fails again, cleanup_result writes
+            # a fresh marker, and if starting it raises we would rather try
+            # again next sweep than lose the account to silence.
+            account_manager.clear_cleanup_failure(account_id)
+            build_id = session_teardown.start_cleanup_build(account_id)
+            print(f"Retrying cleanup of {account_id} (attempt {attempts + 1}): {build_id}")
+            retried.append(account_id)
+        except ClientError as e:
+            print(f"Could not retry the cleanup of {account_id}: {e}")
+        except Exception as e:
+            print(f"Unexpected error retrying the cleanup of {account_id}: {e}")
+
+    return retried, quarantined
 
 
 def lambda_handler(event, context):
@@ -90,5 +146,15 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Unexpected error expiring session {session_id}: {e}")
 
-    print(f"Janitor checked {checked} active session(s), expired {len(expired)}")
-    return {'checked': checked, 'expired': expired}
+    retried, quarantined = _retry_cleanups(account_manager, now)
+
+    print(
+        f"Janitor checked {checked} active session(s), expired {len(expired)}, "
+        f"retried {len(retried)} cleanup(s), quarantined {len(quarantined)}"
+    )
+    return {
+        'checked': checked,
+        'expired': expired,
+        'retried_cleanups': retried,
+        'quarantined': quarantined,
+    }

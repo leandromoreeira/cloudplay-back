@@ -144,3 +144,77 @@ def test_one_broken_session_does_not_stop_the_sweep(sessions_table, accounts_tab
     # The point of the sweep is the accounts the *other* sessions are holding.
     assert [e['session_id'] for e in result['expired']] == ['fine']
     assert status_of(accounts_table, ACCOUNT_B) == 'CLEANING'
+
+
+# --- retrying a wipe that failed --------------------------------------------
+#
+# The waiting happens here rather than inside the build: an ENI left by a
+# Lambda in a VPC takes tens of minutes to be released, and a CodeBuild
+# container sleeping through that is billed by the minute.
+
+def _long_ago(minutes):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)) \
+        .isoformat().replace('+00:00', 'Z')
+
+
+def a_failed_cleanup(accounts_table, account_id=ACCOUNT_A, attempts=1, minutes_ago=30):
+    accounts_table.put_item(Item={
+        'account_id': account_id,
+        'status': 'CLEANING',
+        'cleanup_attempts': attempts,
+        'cleanup_failed_at': _long_ago(minutes_ago),
+        'failure_reason': 'cleanup build FAILED: some-build',
+    })
+
+
+def test_a_failed_cleanup_is_tried_again(janitor, accounts_table):
+    a_failed_cleanup(accounts_table)
+
+    result = janitor.lambda_handler({}, None)
+
+    assert result['retried_cleanups'] == [ACCOUNT_A]
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    # The marker is cleared so the next failure writes a fresh one; the
+    # count stays, because that is what decides when to give up.
+    assert 'cleanup_failed_at' not in item
+    assert item['cleanup_attempts'] == 1
+
+
+def test_a_failure_too_recent_is_left_alone(janitor, accounts_table):
+    a_failed_cleanup(accounts_table, minutes_ago=2)
+
+    result = janitor.lambda_handler({}, None)
+
+    # Retrying immediately just burns another build against an ENI that AWS
+    # has not released yet.
+    assert result['retried_cleanups'] == []
+    assert accounts_table.get_item(
+        Key={'account_id': ACCOUNT_A})['Item']['cleanup_failed_at']
+
+
+def test_enough_failures_quarantine_it(janitor, accounts_table, verified_sender):
+    a_failed_cleanup(accounts_table, attempts=3)
+
+    result = janitor.lambda_handler({}, None)
+
+    assert result['quarantined'] == [ACCOUNT_A]
+    assert accounts_table.get_item(
+        Key={'account_id': ACCOUNT_A})['Item']['status'] == 'QUARANTINED'
+
+
+def test_an_account_merely_cleaning_is_not_disturbed(janitor, accounts_table):
+    # No cleanup_failed_at: a build is running right now, and starting a
+    # second one on the same account would be the worst thing here.
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'CLEANING'})
+
+    assert janitor.lambda_handler({}, None)['retried_cleanups'] == []
+
+
+def test_a_healthy_pool_is_untouched(janitor, accounts_table):
+    accounts_table.put_item(Item={'account_id': ACCOUNT_A, 'status': 'AVAILABLE'})
+    accounts_table.put_item(Item={'account_id': ACCOUNT_B, 'status': 'IN_USE'})
+
+    result = janitor.lambda_handler({}, None)
+
+    assert result['retried_cleanups'] == [] and result['quarantined'] == []

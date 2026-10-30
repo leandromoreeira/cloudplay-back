@@ -86,6 +86,22 @@ def _delete_lab_stack(account_manager, account_id, session_id):
         print(f"Could not start the stack delete in {account_id}: {e}")
 
 
+def start_cleanup_build(account_id):
+    """
+    Put the aws-nuke build on an account, and hand back its id.
+
+    Both the first attempt and every retry come through here, so there is
+    one place that knows the project's name and how it is addressed.
+    """
+    build = boto3.client('codebuild').start_build(
+        projectName=os.environ['CLEANUP_PROJECT_NAME'],
+        environmentVariablesOverride=[
+            {'name': 'TARGET_ACCOUNT', 'value': account_id, 'type': 'PLAINTEXT'}
+        ]
+    )
+    return build['build']['id']
+
+
 def _result(outcome, account_id=None, build_id=None, error=None):
     return {
         'outcome': outcome,
@@ -155,12 +171,7 @@ def end_session(sessions_table, session, account_manager, reason=None):
     _delete_lab_stack(account_manager, account_id, session_id)
 
     try:
-        build = boto3.client('codebuild').start_build(
-            projectName=os.environ['CLEANUP_PROJECT_NAME'],
-            environmentVariablesOverride=[
-                {'name': 'TARGET_ACCOUNT', 'value': account_id, 'type': 'PLAINTEXT'}
-            ]
-        )
+        build_id = start_cleanup_build(account_id)
     except ClientError as e:
         # The account is dirty and nothing is coming to clean it, so it must
         # not drift back into the pool on its own.
@@ -172,7 +183,6 @@ def end_session(sessions_table, session, account_manager, reason=None):
         )
         return _result(FAILED, account_id, error=message)
 
-    build_id = build['build']['id']
     print(f"Started cleanup build {build_id} for account {account_id}")
 
     sessions_table.update_item(

@@ -75,21 +75,59 @@ def test_a_wiped_account_goes_back_into_the_pool(accounts_table, handler):
 
 
 @pytest.mark.parametrize('status', ['FAILED', 'STOPPED', 'TIMED_OUT'])
-def test_every_unhappy_ending_quarantines(accounts_table, handler, status):
+def test_an_unhappy_ending_is_noted_and_left_for_another_go(
+    accounts_table, handler, status
+):
     given(accounts_table)
 
     handler.lambda_handler(build_event(status), None)
 
-    assert status_of(accounts_table) == 'QUARANTINED'
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    # Still CLEANING, which already keeps it out of the pool, and marked so
+    # the janitor comes back for it. Most failures are AWS not having let
+    # go of something yet, and that only needs time.
+    assert item['status'] == 'CLEANING'
+    assert item['cleanup_attempts'] == 1
+    assert item['cleanup_failed_at']
 
 
-def test_the_quarantine_says_which_build_died(accounts_table, handler):
+def test_the_reason_says_which_build_died(accounts_table, handler):
     given(accounts_table)
 
     handler.lambda_handler(build_event('TIMED_OUT'), None)
 
     reason = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']['failure_reason']
     assert 'TIMED_OUT' in reason
+
+
+def test_the_last_attempt_is_the_one_that_quarantines(accounts_table, handler):
+    given(accounts_table)
+    accounts_table.update_item(
+        Key={'account_id': ACCOUNT_A},
+        UpdateExpression='SET cleanup_attempts = :n',
+        ExpressionAttributeValues={':n': 2},
+    )
+
+    handler.lambda_handler(build_event('FAILED'), None)
+
+    # Three failures is no longer slowness, it is something stuck, and that
+    # needs a person.
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    assert item['status'] == 'QUARANTINED'
+    assert '3 attempts' in item['failure_reason']
+
+
+def test_a_wipe_that_took_two_goes_leaves_no_count_behind(accounts_table, handler):
+    given(accounts_table)
+    handler.lambda_handler(build_event('FAILED'), None)
+    handler.lambda_handler(build_event('SUCCEEDED'), None)
+
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    # The count must not follow the account into the pool and shorten the
+    # next session's patience.
+    assert item['status'] == 'AVAILABLE'
+    assert 'cleanup_attempts' not in item
+    assert 'cleanup_failed_at' not in item
 
 
 def test_a_released_account_releases_its_session_too(accounts_table, sessions_table, handler):
@@ -139,8 +177,23 @@ def test_a_build_with_no_session_behind_it_still_frees_the_account(
     assert status_of(accounts_table) == 'AVAILABLE'
 
 
-def test_a_quarantine_reaches_a_human(accounts_table, handler, verified_sender):
+def test_a_retryable_failure_does_not_wake_anyone(accounts_table, handler, verified_sender):
     given(accounts_table)
+
+    handler.lambda_handler(build_event('FAILED'), None)
+
+    # An email per slow ENI would be noise, and noise is what gets ignored
+    # on the day it matters.
+    assert sent_emails() == []
+
+
+def test_giving_up_reaches_a_human(accounts_table, handler, verified_sender):
+    given(accounts_table)
+    accounts_table.update_item(
+        Key={'account_id': ACCOUNT_A},
+        UpdateExpression='SET cleanup_attempts = :n',
+        ExpressionAttributeValues={':n': 2},
+    )
 
     handler.lambda_handler(build_event('FAILED'), None)
 

@@ -144,6 +144,21 @@ Administração pelo `scripts/manage_accounts.py`: `list`, `add`, `remove`,
 `set-status`, `team-role`, `provision`. O `provision` cria uma conta AWS nova,
 move para a OU e registra no pool.
 
+Uma limpeza que falha **não quarentena na hora**. O `cleanup_result` grava
+`cleanup_attempts` + `cleanup_failed_at` e deixa a conta em `CLEANING` (que já
+a mantém fora do pool); o **janitor** redispara o build depois de
+`RetryCleanupAfterMinutes`. Só após `MaxCleanupAttempts` falhas é que
+quarentena e manda e-mail.
+
+Por que o retry é no janitor e não dentro do build: a causa quase sempre é a
+AWS ainda não ter soltado algo — **ENI de Lambda em VPC leva dezenas de
+minutos** e segura o security group, a subnet e a VPC atrás dela. Esperar
+dentro do CodeBuild é pagar container por minuto para dormir; foi assim que
+três builds de ~40 min esvaziaram o pool em 28-30/10/2026. O janitor já acorda
+de 30 em 30 min e custa o mesmo achando ou não algo. Por isso o
+`--max-wait-retries` do nuke caiu de 5 para **2**: desistir rápido ficou
+barato.
+
 Uma conta em `QUARANTINED` sai do pool e **só volta na mão**
 (`set-status --status AVAILABLE`). Um e-mail avisa quando isso acontece.
 

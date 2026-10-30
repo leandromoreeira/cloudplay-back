@@ -113,8 +113,72 @@ class AccountManager:
             allowed_from=[STATUS_CLEANING, STATUS_IN_USE],
             # Nobody holds it any more. Leaving the old id behind makes a free
             # account read as if something still had it.
-            clear_session=True
+            clear_session=True,
+            # A wipe that needed three goes still succeeded; the count must
+            # not follow the account into the pool and shorten its next one.
+            clear_cleanup=True,
         )
+
+    def record_cleanup_failure(self, account_id: str, reason: str) -> int:
+        """
+        Note that a cleanup build failed, without taking the account away.
+
+        The account stays CLEANING, which already keeps it unclaimable, and
+        the janitor comes back for it later. Most failures are a resource
+        AWS has not finished releasing — an ENI left behind by a Lambda in a
+        VPC takes tens of minutes — so the only thing missing is time, and
+        waiting for it inside a paid build container is the expensive way to
+        wait.
+
+        Returns how many times the wipe has now failed.
+        """
+        try:
+            answer = self.table.update_item(
+                Key={'account_id': account_id},
+                UpdateExpression=(
+                    'SET cleanup_attempts = if_not_exists(cleanup_attempts, :zero) + :one, '
+                    'cleanup_failed_at = :now, failure_reason = :reason, updated_at = :now'
+                ),
+                ExpressionAttributeValues={
+                    ':zero': 0, ':one': 1, ':now': _now(), ':reason': reason,
+                },
+                ReturnValues='UPDATED_NEW',
+            )
+        except ClientError as e:
+            print(f"Could not record the failed cleanup of {account_id}: {e}")
+            return 0
+
+        return int(answer['Attributes'].get('cleanup_attempts', 0))
+
+    def cleanups_awaiting_retry(self) -> List[Dict[str, Any]]:
+        """
+        Accounts whose last wipe failed and that nothing is working on.
+
+        cleanup_failed_at is only ever written when a build has finished and
+        failed, so this cannot collide with one that is still running.
+        """
+        try:
+            response = self.table.scan(
+                FilterExpression='#status = :cleaning AND attribute_exists(cleanup_failed_at)',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':cleaning': STATUS_CLEANING},
+            )
+        except ClientError as e:
+            print(f"Could not list the accounts awaiting a retry: {e}")
+            return []
+
+        return response.get('Items', [])
+
+    def clear_cleanup_failure(self, account_id: str) -> None:
+        """Called when another attempt is about to start."""
+        try:
+            self.table.update_item(
+                Key={'account_id': account_id},
+                UpdateExpression='SET updated_at = :now REMOVE cleanup_failed_at',
+                ExpressionAttributeValues={':now': _now()},
+            )
+        except ClientError as e:
+            print(f"Could not clear the failure marker on {account_id}: {e}")
 
     def mark_quarantined(self, account_id: str, reason: str) -> bool:
         """
@@ -178,7 +242,7 @@ class AccountManager:
             print(f"Could not send the quarantine alert for {account_id}: {e}")
 
     def _transition(self, account_id: str, new_status: str, allowed_from: List[str],
-                    clear_session: bool = False) -> bool:
+                    clear_session: bool = False, clear_cleanup: bool = False) -> bool:
         placeholders = {f':from{i}': status for i, status in enumerate(allowed_from)}
         condition = '#status IN ({})'.format(', '.join(placeholders))
 
@@ -189,8 +253,14 @@ class AccountManager:
         expression_values.update(placeholders)
 
         update = 'SET #status = :status, updated_at = :now'
+
+        removals = []
         if clear_session:
-            update += ' REMOVE session_id'
+            removals.append('session_id')
+        if clear_cleanup:
+            removals += ['cleanup_attempts', 'cleanup_failed_at', 'failure_reason']
+        if removals:
+            update += ' REMOVE ' + ', '.join(removals)
 
         try:
             self.table.update_item(

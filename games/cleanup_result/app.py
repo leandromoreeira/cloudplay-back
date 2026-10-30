@@ -16,6 +16,9 @@ from botocore.exceptions import ClientError
 # Import from Lambda Layer
 from account_manager import get_account_manager
 
+# How many times a wipe may fail before a person has to look at it.
+MAX_ATTEMPTS = int(os.environ.get('MAX_CLEANUP_ATTEMPTS', '3'))
+
 
 def _target_account(detail):
     """The account the build was asked to wipe, from its env var overrides."""
@@ -97,9 +100,23 @@ def lambda_handler(event, context):
         print(f"Account {account_id} wiped, back in the pool")
         return
 
-    account_manager.mark_quarantined(
-        account_id,
-        f"cleanup build {status}: {build_id}"
-    )
+    # Most failures here are not a broken account, they are an account AWS
+    # has not finished letting go of: an ENI left by a Lambda in a VPC takes
+    # tens of minutes to be released, and it holds the security group, the
+    # subnet and the VPC behind it. Quarantining on the first failure turned
+    # that wait into a human errand, and three of them emptied the pool.
+    reason = f"cleanup build {status}: {build_id}"
+    attempts = account_manager.record_cleanup_failure(account_id, reason)
+
+    if attempts >= MAX_ATTEMPTS:
+        account_manager.mark_quarantined(
+            account_id, f"{reason} (after {attempts} attempts)"
+        )
+        _close_session(account_id, build_id, 'CLEANUP_FAILED')
+        print(f"Account {account_id} quarantined after {attempts} failed cleanups")
+        return
+
+    # Left CLEANING, which already keeps it out of the pool. The janitor
+    # starts the next attempt once enough time has passed.
     _close_session(account_id, build_id, 'CLEANUP_FAILED')
-    print(f"Account {account_id} quarantined after cleanup build {status}")
+    print(f"Cleanup of {account_id} failed ({attempts}/{MAX_ATTEMPTS}), will retry")
