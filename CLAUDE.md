@@ -249,6 +249,22 @@ Duas ausências deliberadas: **tentativas** (nada registra resposta errada, ent�
 — as 320 sessões de teste anteriores a out/2026 foram apagadas em 27/10/2026,
 então as séries começam ali.
 
+**Dois conceitos separados de propósito**, em `analytics.py`:
+
+- `ending()` — operacional: `ended` / `expired` / `cleanup_failed` / `unknown`.
+  Alimenta os contadores que o operador lê.
+- `outcome()` — o que aconteceu com a pessoa: `running` / `completed` /
+  `unfinished`. `completed` significa **todas as tasks do game concluídas
+  naquela sessão**, não "apertou parar".
+
+Estavam na mesma coluna e isso era enganoso: uma limpeza que falhou depois não
+diz nada sobre como o aluno foi, e uma sessão que o janitor fechou diz só que
+ele foi embora. Nenhuma das duas é um veredito sobre ele.
+
+Saber se concluiu exige a contagem de tasks do game, que é buscada **só para os
+games que aparecem nas sessões** — o DynamoDB não sabe devolver um `count`, e o
+corpo das tasks vem junto, então varrer o catálogo inteiro sairia caro.
+
 O `per_task` é o que justifica a tela: mediana de tempo por task. O primeiro
 dado real já mostrou um game com task1 em 30min e task2 em 1min19s.
 

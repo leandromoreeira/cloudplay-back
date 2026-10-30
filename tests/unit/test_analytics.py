@@ -71,7 +71,49 @@ def test_duration_is_the_gap_between_the_two_stamps(agg):
     (a_session(end=None, active=True), 'running'),
 ])
 def test_each_ending_is_named(agg, session, expected):
-    assert agg.outcome(session) == expected
+    # Operational, for the counters an operator reads.
+    assert agg.ending(session) == expected
+
+
+# --- what happened to the player, which is a different question -------------
+
+def test_a_session_that_finished_every_task_reads_as_completed(agg):
+    session = a_session(tasks=done(task1=60, task2=60))
+
+    assert agg.outcome(session, task_count=2) == 'completed'
+
+
+def test_a_session_that_stopped_short_reads_as_unfinished(agg):
+    session = a_session(tasks=done(task1=60))
+
+    assert agg.outcome(session, task_count=2) == 'unfinished'
+
+
+def test_pressing_stop_is_not_the_same_as_finishing(agg):
+    # ended_reason says they pressed the button; the tasks say they were
+    # halfway. The column is about them, not about the button.
+    session = a_session(reason='ended by player', tasks=done(task1=60))
+
+    assert agg.outcome(session, task_count=3) == 'unfinished'
+
+
+def test_a_failed_cleanup_says_nothing_about_the_player(agg):
+    session = a_session(status='CLEANUP_FAILED', tasks=done(task1=60, task2=60))
+
+    # The wipe afterwards broke; they still finished the game.
+    assert agg.outcome(session, task_count=2) == 'completed'
+    assert agg.ending(session) == 'cleanup_failed'
+
+
+def test_a_running_session_is_running_whatever_it_has_done(agg):
+    session = a_session(end=None, active=True, tasks=done(task1=60, task2=60))
+
+    assert agg.outcome(session, task_count=2) == 'running'
+
+
+def test_a_game_whose_task_count_is_unknown_is_not_called_completed(agg):
+    # Better unfinished than a green tick we cannot justify.
+    assert agg.outcome(a_session(tasks=done(task1=60)), task_count=None) == 'unfinished' 
 
 
 # --- the headline numbers ---------------------------------------------------
@@ -334,3 +376,22 @@ def test_a_game_nobody_played_comes_back_empty_rather_than_wrong(handler, sessio
 
     assert body['summary']['sessions'] == 0
     assert body['per_game'] == [] and body['recent'] == []
+
+
+def test_the_recent_list_carries_the_player_facing_outcome(handler, sessions_table, games_table):
+    games_table.put_item(Item={
+        'id': 'game1', 'title': 'A game',
+        'tasks': [{'id': 'task1'}, {'id': 'task2'}],
+    })
+    given_sessions(
+        sessions_table,
+        a_session(game_id='game1', start='2026-10-25T09:00:00Z',
+                  tasks=done(task1=60, task2=60)),
+        a_session(game_id='game1', start='2026-10-25T08:00:00Z',
+                  tasks=done(task1=60)),
+    )
+
+    rows = body_of(handler.lambda_handler(a_request(), None))['recent']
+
+    assert [r['outcome'] for r in rows] == ['completed', 'unfinished']
+    assert [r['tasks_total'] for r in rows] == [2, 2]

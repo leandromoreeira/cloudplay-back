@@ -44,8 +44,14 @@ def duration_seconds(session):
     return seconds if seconds >= 0 else None
 
 
-def outcome(session):
-    """Why this session is over, in the words the screen uses."""
+def ending(session):
+    """
+    How the session was closed, in operational terms.
+
+    This is about the platform, not the player: whether they pressed the
+    button, whether the janitor had to, whether the wipe afterwards worked.
+    It feeds the counters an operator reads and nothing a player sees.
+    """
     if session.get('active'):
         return 'running'
 
@@ -61,6 +67,27 @@ def outcome(session):
     # for. Naming it rather than folding it into "ended" keeps the counts
     # honest about what is actually known.
     return 'unknown'
+
+
+def outcome(session, task_count=None):
+    """
+    What happened to the player, which is a different question.
+
+    A session whose cleanup failed afterwards says nothing about how the
+    player did, and one the janitor closed says only that they walked away
+    — both were being shown in the same column as a verdict on them.
+
+    So: still up, finished everything, or did not. Completing means every
+    task of the game went green in this session, not that the stop button
+    was pressed.
+    """
+    if session.get('active'):
+        return 'running'
+
+    if task_count and len(completed_tasks(session)) >= task_count:
+        return 'completed'
+
+    return 'unfinished'
 
 
 def completed_tasks(session):
@@ -80,7 +107,7 @@ def summarise(sessions, completed_games):
     finished in an earlier session is still finished.
     """
     durations = [d for d in (duration_seconds(s) for s in sessions) if d is not None]
-    outcomes = [outcome(s) for s in sessions]
+    endings = [ending(s) for s in sessions]
 
     return {
         'sessions': len(sessions),
@@ -89,9 +116,9 @@ def summarise(sessions, completed_games):
         'tasks_completed': sum(len(completed_tasks(s)) for s in sessions),
         'total_seconds': sum(durations),
         'median_session_seconds': _median(durations),
-        'ended_by_player': outcomes.count('ended'),
-        'expired_by_janitor': outcomes.count('expired'),
-        'cleanup_failed': outcomes.count('cleanup_failed'),
+        'ended_by_player': endings.count('ended'),
+        'expired_by_janitor': endings.count('expired'),
+        'cleanup_failed': endings.count('cleanup_failed'),
     }
 
 
@@ -209,8 +236,9 @@ def per_user(sessions, finished_pairs):
     return out
 
 
-def recent(sessions, titles, limit=25):
+def recent(sessions, titles, task_counts=None, limit=25):
     """The latest sessions, newest first, as the screen lists them."""
+    counts = task_counts or {}
     ordered = sorted(
         sessions, key=lambda s: s.get('start_time') or '', reverse=True
     )[:limit]
@@ -221,6 +249,7 @@ def recent(sessions, titles, limit=25):
         'user': s.get('user_name'),
         'start_time': s.get('start_time'),
         'duration_seconds': duration_seconds(s),
-        'outcome': outcome(s),
+        'outcome': outcome(s, counts.get(s.get('game_id'))),
         'tasks_completed': len(completed_tasks(s)),
+        'tasks_total': counts.get(s.get('game_id')),
     } for s in ordered]
