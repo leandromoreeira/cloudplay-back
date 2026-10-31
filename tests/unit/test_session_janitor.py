@@ -218,3 +218,41 @@ def test_a_healthy_pool_is_untouched(janitor, accounts_table):
     result = janitor.lambda_handler({}, None)
 
     assert result['retried_cleanups'] == [] and result['quarantined'] == []
+
+
+def test_the_retry_carries_the_session_with_it(janitor, accounts_table, sessions_table,
+                                               cleanup_project):
+    """
+    cleanup_result finds a session by the build id it holds. A retry starts
+    a different build, so without updating it the wipe succeeds, the account
+    returns to the pool, and the session is left saying CLEANUP_FAILED
+    forever — which is exactly what happened in production on 30/10.
+    """
+    sessions_table.put_item(Item={
+        'session_id': 's-1', 'user_name': 'player@example.com', 'game_id': 'game1',
+        'account_id': ACCOUNT_A, 'active': False,
+        'start_time': '2026-10-30T10:00:00Z',
+        'stack_status': 'CLEANUP_FAILED',
+        'cleanup_build_id': 'aws-jam-account-cleanup:the-one-that-failed',
+    })
+    accounts_table.put_item(Item={
+        'account_id': ACCOUNT_A, 'status': 'CLEANING', 'session_id': 's-1',
+        'cleanup_attempts': 1, 'cleanup_failed_at': _long_ago(30),
+    })
+
+    janitor.lambda_handler({}, None)
+
+    session = sessions_table.get_item(Key={'session_id': 's-1'})['Item']
+    assert session['cleanup_build_id'] != 'aws-jam-account-cleanup:the-one-that-failed'
+    assert session['stack_status'] == 'CLEANUP_IN_PROGRESS'
+
+
+def test_a_retry_without_a_session_still_happens(janitor, accounts_table, cleanup_project):
+    # An account can be cleaned with no session to report back to; the wipe
+    # is what matters and must not depend on finding one.
+    accounts_table.put_item(Item={
+        'account_id': ACCOUNT_A, 'status': 'CLEANING',
+        'cleanup_attempts': 1, 'cleanup_failed_at': _long_ago(30),
+    })
+
+    assert janitor.lambda_handler({}, None)['retried_cleanups'] == [ACCOUNT_A]

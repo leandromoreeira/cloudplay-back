@@ -60,7 +60,33 @@ def _active_sessions(table):
         kwargs['ExclusiveStartKey'] = last_key
 
 
-def _retry_cleanups(account_manager, now):
+def _hand_session_to(table, session_id, build_id):
+    """
+    Point the session at the build that is now cleaning up after it.
+
+    cleanup_result finds the session by the build id it carries, so without
+    this a retry finishes and nothing connects the result back: the account
+    returns to the pool and the session is left reading CLEANUP_FAILED for
+    a wipe that worked.
+    """
+    try:
+        table.update_item(
+            Key={'session_id': session_id},
+            UpdateExpression=(
+                'SET cleanup_build_id = :build_id, stack_status = :status'
+            ),
+            ExpressionAttributeValues={
+                ':build_id': build_id,
+                # Being worked on, not failed. The old value was the verdict
+                # of an attempt that has just been superseded.
+                ':status': 'CLEANUP_IN_PROGRESS',
+            },
+        )
+    except ClientError as e:
+        print(f"Could not point session {session_id} at build {build_id}: {e}")
+
+
+def _retry_cleanups(table, account_manager, now):
     """
     Start another wipe on accounts whose last one failed.
 
@@ -98,6 +124,13 @@ def _retry_cleanups(account_manager, now):
             # again next sweep than lose the account to silence.
             account_manager.clear_cleanup_failure(account_id)
             build_id = session_teardown.start_cleanup_build(account_id)
+
+            # mark_cleaning keeps session_id on the account, which is the
+            # only thread back to the session from here.
+            session_id = account.get('session_id')
+            if session_id:
+                _hand_session_to(table, session_id, build_id)
+
             print(f"Retrying cleanup of {account_id} (attempt {attempts + 1}): {build_id}")
             retried.append(account_id)
         except ClientError as e:
@@ -146,7 +179,7 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Unexpected error expiring session {session_id}: {e}")
 
-    retried, quarantined = _retry_cleanups(account_manager, now)
+    retried, quarantined = _retry_cleanups(table, account_manager, now)
 
     print(
         f"Janitor checked {checked} active session(s), expired {len(expired)}, "

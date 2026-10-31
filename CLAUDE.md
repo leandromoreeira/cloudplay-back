@@ -150,6 +150,12 @@ a mantém fora do pool); o **janitor** redispara o build depois de
 `RetryCleanupAfterMinutes`. Só após `MaxCleanupAttempts` falhas é que
 quarentena e manda e-mail.
 
+O retry **leva a sessão junto**: ele reescreve `cleanup_build_id` e devolve o
+status para `CLEANUP_IN_PROGRESS`. O `cleanup_result` acha a sessão pelo id do
+build, então sem isso o retry termina, a conta volta ao pool e a sessão fica
+dizendo `CLEANUP_FAILED` para sempre — aconteceu em produção em 30/10/2026. O
+fio de volta é o `session_id` que o `mark_cleaning` mantém na conta.
+
 Por que o retry é no janitor e não dentro do build: a causa quase sempre é a
 AWS ainda não ter soltado algo — **ENI de Lambda em VPC leva dezenas de
 minutos** e segura o security group, a subnet e a VPC atrás dela. Esperar
@@ -262,9 +268,23 @@ mesma coluna e isso era enganoso: uma limpeza que falhou depois não
 diz nada sobre como o aluno foi, e uma sessão que o janitor fechou diz só que
 ele foi embora. Nenhuma das duas é um veredito sobre ele.
 
-Saber se concluiu exige a contagem de tasks do game, que é buscada **só para os
-games que aparecem nas sessões** — o DynamoDB não sabe devolver um `count`, e o
-corpo das tasks vem junto, então varrer o catálogo inteiro sairia caro.
+**O analytics não lê o catálogo.** O `start_game_session` copia `game_title` e
+`tasks_total` para a própria sessão quando ela é criada.
+
+O motivo é medido: ler 161 títulos custava **129 das 134 RCU** de cada
+requisição. `ProjectionExpression` não ajuda — o DynamoDB lê o item inteiro e
+só então projeta, e cada game tem ~6,4 KB de HTML. Com os campos na sessão a
+requisição caiu para **5,5 RCU, 96% menos**, e o custo virou uma leitura por
+sessão iniciada em vez de um scan por consulta.
+
+Efeito colateral deliberado: um game renomeado depois mantém, no histórico, o
+nome que tinha enquanto foi jogado.
+
+E o gargalo não era o que parecia: o scan de **sessões** custava 3 RCU. Só com
+~10 mil sessões ele chegaria ao custo que o scan do catálogo já tinha. Por isso
+não há tabela de estatística — derivar na leitura ainda é mais barato e mais
+flexível. O degrau seguinte, se um dia precisar, é recortar por janela de tempo
+com uma GSI por data; pré-agregar só vale bem depois disso.
 
 O `per_task` é o que justifica a tela: mediana de tempo por task. O primeiro
 dado real já mostrou um game com task1 em 30min e task2 em 1min19s.
