@@ -33,6 +33,37 @@ def _response(status_code, body):
     }
 
 
+def _game_facts(game_id):
+    """
+    The game's title and how many tasks it has, to be copied onto the session.
+
+    Analytics used to read these from the catalogue, which meant scanning 160
+    game items — each one carrying its tasks' HTML — to learn a handful of
+    titles. A projection does not help: DynamoDB reads the whole item and
+    projects afterwards, so that scan was 129 of the 134 read units a single
+    analytics request spent.
+
+    Copying them here costs one read per session started, and has a second
+    effect worth having: a game renamed later keeps, in the history, the name
+    it had while it was being played.
+    """
+    try:
+        item = boto3.resource('dynamodb').Table(os.environ['GAMES_TABLE']).get_item(
+            Key={'id': game_id}
+        ).get('Item')
+    except ClientError as e:
+        print(f"Could not read {game_id} for its title: {e}")
+        return {}
+
+    if not item:
+        return {}
+
+    return {
+        'game_title': item.get('title') or game_id,
+        'tasks_total': len(item.get('tasks') or []),
+    }
+
+
 def _abandon(table, session_id, account_manager=None, account_id=None):
     """Undo a start that never got off the ground."""
     if account_id:
@@ -87,6 +118,7 @@ def lambda_handler(event, context):
                 'end_time': None,
                 'stack_status': STATUS_STARTING,
                 'stack_outputs': {},
+                **_game_facts(game_id),
                 # The tasks finished in this attempt, filled in as they are.
                 # A replay of a finished game starts from an empty board.
                 'completed_tasks': {}

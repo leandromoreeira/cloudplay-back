@@ -24,7 +24,8 @@ def agg():
 
 def a_session(user=PLAYER, game_id='game1', start='2026-10-25T10:00:00Z',
               end='2026-10-25T11:00:00Z', reason='ended by player',
-              status='CLEANUP_COMPLETE', tasks=None, active=False):
+              status='CLEANUP_COMPLETE', tasks=None, active=False,
+              title=None, tasks_total=None):
     session = {
         'session_id': f'{user}-{game_id}-{start}',
         'user_name': user,
@@ -34,6 +35,10 @@ def a_session(user=PLAYER, game_id='game1', start='2026-10-25T10:00:00Z',
         'stack_status': status,
         'completed_tasks': tasks or {},
     }
+    if title:
+        session['game_title'] = title
+    if tasks_total:
+        session['tasks_total'] = tasks_total
     if end:
         session['end_time'] = end
     if reason:
@@ -293,13 +298,34 @@ def test_completions_come_from_the_progress_table(handler, sessions_table, progr
     assert body['summary']['games_completed'] == 1
 
 
-def test_titles_come_from_the_catalogue(handler, sessions_table, games_table):
-    given_sessions(sessions_table, a_session(game_id='game1'))
-    games_table.put_item(Item={'id': 'game1', 'title': 'Where are my nodes'})
+def test_titles_come_off_the_session_not_the_catalogue(handler, sessions_table):
+    given_sessions(sessions_table, a_session(game_id='game1', title='Where are my nodes'))
 
     body = body_of(handler.lambda_handler(a_request(), None))
 
+    # Nothing here reads the Games table: a projection would not have saved
+    # it, since DynamoDB reads whole items and the task bodies come along.
     assert body['per_game'][0]['title'] == 'Where are my nodes'
+
+
+def test_a_session_without_a_title_falls_back_to_the_id(handler, sessions_table):
+    given_sessions(sessions_table, a_session(game_id='game1'))
+
+    body = body_of(handler.lambda_handler(a_request(), None))
+
+    assert body['per_game'][0]['title'] == 'game1'
+
+
+def test_the_most_recent_name_of_a_game_wins(handler, sessions_table):
+    given_sessions(
+        sessions_table,
+        a_session(game_id='game1', start='2026-10-20T10:00:00Z', title='Old name'),
+        a_session(game_id='game1', start='2026-10-25T10:00:00Z', title='New name'),
+    )
+
+    body = body_of(handler.lambda_handler(a_request(), None))
+
+    assert body['per_game'][0]['title'] == 'New name'
 
 
 # --- drilling into one game -------------------------------------------------
@@ -378,16 +404,12 @@ def test_a_game_nobody_played_comes_back_empty_rather_than_wrong(handler, sessio
     assert body['per_game'] == [] and body['recent'] == []
 
 
-def test_the_recent_list_carries_the_player_facing_outcome(handler, sessions_table, games_table):
-    games_table.put_item(Item={
-        'id': 'game1', 'title': 'A game',
-        'tasks': [{'id': 'task1'}, {'id': 'task2'}],
-    })
+def test_the_recent_list_carries_the_player_facing_outcome(handler, sessions_table):
     given_sessions(
         sessions_table,
-        a_session(game_id='game1', start='2026-10-25T09:00:00Z',
+        a_session(game_id='game1', start='2026-10-25T09:00:00Z', tasks_total=2,
                   tasks=done(task1=60, task2=60)),
-        a_session(game_id='game1', start='2026-10-25T08:00:00Z',
+        a_session(game_id='game1', start='2026-10-25T08:00:00Z', tasks_total=2,
                   tasks=done(task1=60)),
     )
 

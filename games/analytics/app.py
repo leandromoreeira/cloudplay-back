@@ -85,55 +85,29 @@ def _finished_pairs(user=None):
     ]
 
 
-def _titles():
-    """Game ids to titles, so the tables read as names and not as game103."""
-    try:
-        games = _scan(_table('GAMES_TABLE'), ProjectionExpression='id, title')
-    except ClientError as e:
-        print(f"Could not read the catalogue for titles: {e}")
-        return {}
-
-    return {g['id']: g.get('title', g['id']) for g in games if g.get('id')}
-
-
-def _task_counts(game_ids):
+def _from_sessions(sessions):
     """
-    How many tasks each played game has.
+    Titles and task counts, taken from the sessions themselves.
 
-    Needed to say whether a session finished its game, which is what the
-    outcome column now means. Fetched only for the games that actually
-    appear in the sessions — a handful — rather than for the whole
-    catalogue, because there is no way to ask DynamoDB for a count and the
-    task bodies come along with it.
+    start_game_session copies both onto the session when it is created, so
+    this endpoint reads no catalogue at all. Reading one cost 129 of the 134
+    read units a request spent, and it bought seven titles.
+
+    Chronological order means the most recent name of a game wins when one
+    was renamed mid-history.
     """
-    wanted = sorted({g for g in game_ids if g})
-    if not wanted:
-        return {}
+    titles, counts = {}, {}
 
-    dynamodb = boto3.resource('dynamodb')
-    table_name = os.environ['GAMES_TABLE']
-    counts = {}
+    for session in sorted(sessions, key=lambda s: s.get('start_time') or ''):
+        game_id = session.get('game_id')
+        if not game_id:
+            continue
 
-    for start in range(0, len(wanted), 100):
-        chunk = wanted[start:start + 100]
-        request = {table_name: {
-            'Keys': [{'id': game_id} for game_id in chunk],
-            'ProjectionExpression': 'id, tasks',
-        }}
+        titles[game_id] = session.get('game_title') or game_id
+        if session.get('tasks_total'):
+            counts[game_id] = int(session['tasks_total'])
 
-        while request:
-            try:
-                answer = dynamodb.batch_get_item(RequestItems=request)
-            except ClientError as e:
-                print(f"Could not read task counts: {e}")
-                return counts
-
-            for item in answer['Responses'].get(table_name, []):
-                counts[item['id']] = len(item.get('tasks') or [])
-
-            request = answer.get('UnprocessedKeys') or None
-
-    return counts
+    return titles, counts
 
 
 def lambda_handler(event, context):
@@ -157,7 +131,6 @@ def lambda_handler(event, context):
     try:
         sessions = _sessions(wanted)
         finished = _finished_pairs(wanted)
-        titles = _titles()
     except ClientError as e:
         print(f"Could not read the analytics data: {e}")
         return _response(500, {'message': 'Could not read the numbers'})
@@ -169,7 +142,7 @@ def lambda_handler(event, context):
         sessions = [s for s in sessions if s.get('game_id') == game]
         finished = [pair for pair in finished if pair[0] == game]
 
-    task_counts = _task_counts({s.get('game_id') for s in sessions})
+    titles, task_counts = _from_sessions(sessions)
 
     body = {
         'scope': 'user' if wanted else 'all',

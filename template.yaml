@@ -355,6 +355,8 @@ Resources:
         - AWSCloudFormationFullAccess
         - DynamoDBCrudPolicy:
             TableName: !Ref GameProgressTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref GamesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
@@ -1036,8 +1038,6 @@ Resources:
             TableName: !Ref GameSessionsTable
         - DynamoDBReadPolicy:
             TableName: !Ref GameProgressTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref GamesTable
       Architectures:
         - x86_64
       Events:

@@ -40,7 +40,7 @@ def cloudformation(sessions_table):
 
 @pytest.fixture
 def handler(sessions_table, accounts_table, access_table, games_bucket,
-            progress_table, cloudformation, monkeypatch):
+            progress_table, games_table, cloudformation, monkeypatch):
     import boto3
     import account_manager
 
@@ -331,3 +331,48 @@ def test_cloudformation_is_told_where_to_report_back(handler, cloudformation):
     # Without this the session row only learns what the stack is doing when
     # somebody asks, which is the whole point of the topic.
     assert cloudformation.stacks[0]['NotificationARNs'] == [TOPIC_ARN]
+
+
+# --- the session carries what analytics needs -------------------------------
+
+def given_catalogue_entry(games_table, title='Where are my nodes', tasks=3):
+    games_table.put_item(Item={
+        'id': GAME_ID, 'title': title, 'content': '<p>..</p>',
+        'category': 'Compute', 'difficulty': 'Hard',
+        'tasks': [{'id': f'task{n}', 'title': f'Task {n}', 'content': ''}
+                  for n in range(1, tasks + 1)],
+    })
+
+
+def test_the_session_copies_the_games_title_and_task_count(handler, games_table, sessions_table):
+    given_catalogue_entry(games_table)
+
+    handler.lambda_handler(a_request(), None)
+
+    session = sessions_table.scan()['Items'][0]
+    # Copied once here so that reading the numbers later costs no catalogue
+    # scan: a projection does not help, DynamoDB reads whole items.
+    assert session['game_title'] == 'Where are my nodes'
+    assert session['tasks_total'] == 3
+
+
+def test_a_renamed_game_keeps_its_old_name_in_old_sessions(handler, games_table, sessions_table):
+    given_catalogue_entry(games_table, title='The original name')
+    handler.lambda_handler(a_request(), None)
+
+    given_catalogue_entry(games_table, title='Renamed later')
+
+    stored = sessions_table.scan()['Items'][0]
+    # Deliberate: the history says what the game was called while it was
+    # being played.
+    assert stored['game_title'] == 'The original name'
+
+
+def test_a_game_missing_from_the_catalogue_still_starts(handler, sessions_table):
+    # Access control let them through, so the session must not depend on the
+    # catalogue row existing.
+    response = handler.lambda_handler(a_request(), None)
+
+    assert response['statusCode'] == 200
+    session = sessions_table.scan()['Items'][0]
+    assert 'game_title' not in session
