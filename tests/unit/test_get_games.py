@@ -104,6 +104,45 @@ def test_the_title_filter_matches_on_a_fragment(handler, games_table):
     assert ids_in(handler.lambda_handler(a_request(title='nodes'), None)) == ['game1']
 
 
+@pytest.mark.parametrize('typed', ['NODES', 'Nodes', 'nOdEs', '  nodes  '])
+def test_the_title_filter_ignores_case_and_stray_spaces(handler, games_table, typed):
+    given_games(games_table, a_game('game1', title='Where are my nodes'))
+
+    # DynamoDB cannot fold case in a FilterExpression, so this is matched in
+    # the handler. Without it, searching "VPC" and "vpc" were two searches.
+    assert ids_in(handler.lambda_handler(a_request(title=typed), None)) == ['game1']
+
+
+def test_the_category_filter_is_a_fragment_too(handler, games_table):
+    given_games(
+        games_table,
+        a_game('game1', category='Networking'),
+        a_game('game2', category='Compute'),
+    )
+
+    # Used to demand the whole word, exactly cased.
+    assert ids_in(handler.lambda_handler(a_request(category='net'), None)) == ['game1']
+
+
+def test_the_category_filter_ignores_case(handler, games_table):
+    given_games(games_table, a_game('game1', category='Networking'))
+
+    assert ids_in(handler.lambda_handler(a_request(category='NETWORKING'), None)) == ['game1']
+
+
+def test_a_title_and_a_category_narrow_together(handler, games_table):
+    given_games(
+        games_table,
+        a_game('game1', title='Peering routes', category='Networking'),
+        a_game('game2', title='Peering buckets', category='Storage'),
+        a_game('game3', title='Lambda limits', category='Networking'),
+    )
+
+    response = handler.lambda_handler(a_request(title='peering', category='networking'), None)
+
+    assert ids_in(response) == ['game1']
+
+
 def test_category_and_difficulty_narrow_together(handler, games_table):
     given_games(
         games_table,

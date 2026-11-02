@@ -316,6 +316,13 @@ aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
   --username leandro.lx3@gmail.com --group-name admin --profile personal
 ```
 
+`GET /games` filtra `title` e `category` por **trecho, ignorando maiúsculas**,
+e isso acontece no handler, não no DynamoDB: `FilterExpression` não tem como
+dobrar caixa — não existe `lower()` — então `contains` fazia de "VPC" e "vpc"
+buscas diferentes. Não custa nada mover: filtro **nunca** reduz as RCU de um
+scan, só o que volta pelo fio. `difficulty` continua no DynamoDB por ser uma
+de três palavras exatas.
+
 `GET /games` aceita `status=todo|in_progress|done`. O filtro é aplicado
 **antes da paginação**, junto do filtro de acesso, senão os totais descrevem
 uma lista que o aluno não vê e páginas chegam curtas. Valor desconhecido é

@@ -41,29 +41,29 @@ def lambda_handler(event, context):
             })
         }
 
+    # Difficulty is one of three exact words, so DynamoDB can do it. Title
+    # and category cannot be left to it: a FilterExpression has no way to
+    # fold case — there is no lower() — and `contains` would make "VPC"
+    # and "vpc" different searches. They are matched below instead, which
+    # costs nothing: a filter never reduces the read units of a scan, only
+    # what comes back over the wire.
     scan_kwargs = {}
-    filter_expression = []
-    expression_attribute_values = {}
-
-    if title:
-        filter_expression.append('contains(#title, :title)')
-        scan_kwargs['ExpressionAttributeNames'] = {'#title': 'title'}
-        expression_attribute_values[':title'] = title
-    if category:
-        filter_expression.append('category = :category')
-        expression_attribute_values[':category'] = category
     if difficulty:
-        filter_expression.append('difficulty = :difficulty')
-        expression_attribute_values[':difficulty'] = difficulty
-
-    if filter_expression:
-        scan_kwargs['FilterExpression'] = ' AND '.join(filter_expression)
-    if expression_attribute_values:
-        scan_kwargs['ExpressionAttributeValues'] = expression_attribute_values
+        scan_kwargs['FilterExpression'] = 'difficulty = :difficulty'
+        scan_kwargs['ExpressionAttributeValues'] = {':difficulty': difficulty}
 
     try:
         response = table.scan(**scan_kwargs)
         items = response.get('Items', [])
+
+        # Case-folded substring, the way someone typing into a search box
+        # expects it to behave.
+        if title:
+            needle = title.strip().lower()
+            items = [i for i in items if needle in str(i.get('title', '')).lower()]
+        if category:
+            needle = category.strip().lower()
+            items = [i for i in items if needle in str(i.get('category', '')).lower()]
 
         # Games are private by default: keep only games this user was granted
         # access to, unless they're in the full-access group (None = no restriction)
