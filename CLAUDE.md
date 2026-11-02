@@ -316,6 +316,14 @@ aws cognito-idp admin-add-user-to-group --user-pool-id us-east-1_WoKQuKpZv \
   --username leandro.lx3@gmail.com --group-name admin --profile personal
 ```
 
+`GET /games` ordena **crescente** por padrão e devolve **12** por página. A
+ordem é crescente para um game não mudar de lugar: o catálogo vai até
+`game1000`, e decrescente empurrava a lista inteira a cada publicação —
+além de parecer "mais recente primeiro" sem ser, já que `game1000` é só o
+maior número. Quem quiser ver o que está em andamento usa o filtro de
+progresso, que é a ferramenta para isso. O parâmetro `order` continua
+existindo; nada na tela o oferece.
+
 `GET /games` filtra `title` e `category` por **trecho, ignorando maiúsculas**,
 e isso acontece no handler, não no DynamoDB: `FilterExpression` não tem como
 dobrar caixa — não existe `lower()` — então `contains` fazia de "VPC" e "vpc"

@@ -168,10 +168,32 @@ def test_game_ids_sort_by_their_number_not_as_text(handler, games_table):
     ]
 
 
-def test_the_default_order_is_newest_first(handler, games_table):
+def test_the_default_order_keeps_a_game_in_its_place(handler, games_table):
     given_games(games_table, a_game('game1'), a_game('game2'), a_game('game10'))
 
-    assert ids_in(handler.lambda_handler(a_request(), None)) == ['game10', 'game2', 'game1']
+    # Ascending by default. Descending read as "newest first" but is not —
+    # the catalogue runs to game1000 — and it moved every row down a slot
+    # whenever a game was published.
+    assert ids_in(handler.lambda_handler(a_request(), None)) == ['game1', 'game2', 'game10']
+
+
+def test_descending_is_still_available_to_a_caller_that_asks(handler, games_table):
+    given_games(games_table, a_game('game1'), a_game('game2'), a_game('game10'))
+
+    assert ids_in(handler.lambda_handler(a_request(order='desc'), None)) == [
+        'game10', 'game2', 'game1'
+    ]
+
+
+def test_a_page_holds_twelve_by_default(handler, games_table):
+    given_games(games_table, *[a_game(f'game{n}') for n in range(1, 20)])
+
+    body = listed(handler.lambda_handler(a_request(), None))
+
+    # Matches the three-column grid the dashboard draws, so no page ends in
+    # a short row.
+    assert len(body['data']) == 12
+    assert body['totalPages'] == 2
 
 
 def test_a_page_holds_only_its_own_slice(handler, games_table):

@@ -22,11 +22,15 @@ def lambda_handler(event, context):
 
     query_params = event.get('queryStringParameters') or {}
     page = int(query_params.get('page', 1))
-    page_size = int(query_params.get('pageSize', 10))
+    page_size = int(query_params.get('pageSize', 12))
     title = query_params.get('title')
     category = query_params.get('category')
     difficulty = query_params.get('difficulty')
-    order = query_params.get('order', 'desc').lower()  # Default to desc
+    # Ascending, so a game keeps its place: with the catalogue running to
+    # game1000, descending moved every row down a slot each time a game
+    # was published. The parameter stays for a caller that wants the
+    # other way; nothing in the UI offers it any more.
+    order = query_params.get('order', 'asc').lower()
     status = query_params.get('status')
 
     if status and status not in PROGRESS_STATUSES:
