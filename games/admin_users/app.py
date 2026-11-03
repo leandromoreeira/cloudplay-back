@@ -13,6 +13,7 @@ docstring rather than left to the caller:
 
   * nobody may disable themselves
   * nobody may take their own admin away
+  * nobody may delete themselves
 
 Either one, done by the last administrator, locks every person out of the
 admin area and leaves the AWS CLI as the only way back in.
@@ -183,6 +184,53 @@ def update_user(client, caller, target, body):
     return _response(200, {'email': target, 'groups': _groups_of(client, target)})
 
 
+def delete_user(client, caller, target):
+    """
+    Remove the account and the per-game grants that went with it.
+
+    What is deliberately kept is their history: the sessions they ran stay
+    in the sessions table, and so does their progress. Those record what
+    the platform did — which accounts were used, which were wiped — and
+    deleting a person should not rewrite that. It also means re-inviting
+    the same address picks their progress back up, which is almost always
+    what re-inviting someone means.
+
+    Cognito goes first. If the grants fail to clear afterwards they are
+    inert — nobody can sign in to use them — whereas clearing grants first
+    and then failing to delete would leave a working account stripped of
+    its access for no stated reason.
+    """
+    if target == caller:
+        return _response(409, {'message': 'You cannot delete your own account'})
+
+    client.admin_delete_user(UserPoolId=_pool(), Username=target)
+
+    table = _access_table()
+    grants = table.query(
+        KeyConditionExpression=Key('user_email').eq(target)
+    ).get('Items', [])
+
+    removed = 0
+    try:
+        with table.batch_writer() as batch:
+            for item in grants:
+                batch.delete_item(
+                    Key={'user_email': target, 'game_id': item['game_id']}
+                )
+                removed += 1
+    except ClientError as e:
+        # The account is gone, so the grants cannot be used. Say so rather
+        # than reporting a clean delete that left something behind.
+        print(f"Deleted {target} but could not clear their grants: {e}")
+        return _response(200, {
+            'email': target,
+            'grants_removed': 0,
+            'warning': 'Account deleted, but their game grants could not be cleared',
+        })
+
+    return _response(200, {'email': target, 'grants_removed': removed})
+
+
 def reset_mfa(client, target):
     """
     Forget the authenticator app this user enrolled.
@@ -295,8 +343,11 @@ def lambda_handler(event, context):
             if method == 'POST':
                 return create_user(client, body)
 
-        elif route == '/admin/users/{email}' and method == 'PATCH':
-            return update_user(client, caller, target, body)
+        elif route == '/admin/users/{email}':
+            if method == 'PATCH':
+                return update_user(client, caller, target, body)
+            if method == 'DELETE':
+                return delete_user(client, caller, target)
 
         elif route == '/admin/users/{email}/reset-mfa' and method == 'POST':
             return reset_mfa(client, target)

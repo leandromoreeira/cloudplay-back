@@ -266,10 +266,8 @@ def test_an_empty_list_revokes_everything(handler, user_pool, access_table):
 
 def test_a_verb_the_area_does_not_have_is_refused(handler, user_pool):
     response = handler.lambda_handler(
-        a_request('/admin/users/{email}', 'DELETE', email=PLAYER), None)
+        a_request('/admin/users/{email}', 'PUT', email=PLAYER), None)
 
-    # Deleting a user is deliberately not implemented: disabling covers the
-    # real case and keeps the account's history intact.
     assert response['statusCode'] == 405
 
 
@@ -374,3 +372,65 @@ def test_the_self_guard_survives_encoding(handler, user_pool):
     # Comparing the raw path parameter against the caller would have let an
     # admin disable themselves simply because %40 != @.
     assert response['statusCode'] == 409
+
+
+# --- deleting an account ----------------------------------------------------
+
+def test_deleting_removes_the_account_and_its_grants(handler, user_pool, access_table):
+    import boto3
+
+    given_user(user_pool, PLAYER)
+    for game_id in ('game1', 'game2'):
+        access_table.put_item(Item={'user_email': PLAYER, 'game_id': game_id})
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'DELETE', email=PLAYER), None)
+
+    assert response['statusCode'] == 200
+    assert body_of(response)['grants_removed'] == 2
+    assert access_table.scan()['Items'] == []
+
+    with pytest.raises(boto3.client('cognito-idp').exceptions.UserNotFoundException):
+        boto3.client('cognito-idp').admin_get_user(UserPoolId=user_pool, Username=PLAYER)
+
+
+def test_deleting_leaves_someone_elses_grants_alone(handler, user_pool, access_table):
+    given_user(user_pool, PLAYER)
+    access_table.put_item(Item={'user_email': PLAYER, 'game_id': 'game1'})
+    access_table.put_item(Item={'user_email': 'other@example.com', 'game_id': 'game1'})
+
+    handler.lambda_handler(a_request('/admin/users/{email}', 'DELETE', email=PLAYER), None)
+
+    assert [i['user_email'] for i in access_table.scan()['Items']] == ['other@example.com']
+
+
+def test_an_admin_cannot_delete_themselves(handler, user_pool):
+    import boto3
+
+    given_user(user_pool, ADMIN, groups=['admin'])
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'DELETE', email=ADMIN), None)
+
+    # The same reasoning as the other two guards: the last administrator
+    # doing this leaves the AWS CLI as the only way back in.
+    assert response['statusCode'] == 409
+    assert boto3.client('cognito-idp').admin_get_user(
+        UserPoolId=user_pool, Username=ADMIN)['Username'] == ADMIN
+
+
+def test_deleting_an_unknown_account_is_a_404(handler, user_pool):
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'DELETE', email='ghost@example.com'), None)
+
+    assert response['statusCode'] == 404
+
+
+def test_a_player_cannot_delete_anyone(handler, user_pool):
+    given_user(user_pool, PLAYER, groups=['full-access'])
+
+    response = handler.lambda_handler(
+        a_request('/admin/users/{email}', 'DELETE', email=PLAYER,
+                  groups='[full-access]', caller=PLAYER), None)
+
+    assert response['statusCode'] == 403

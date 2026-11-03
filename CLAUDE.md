@@ -342,9 +342,24 @@ justamente na tela de conceder acesso. Devolve só `id`, `title`, `category` e
 `difficulty` — a tela desenha uma linha por game, e mandar o HTML de 160 games
 não serviria para nada.
 
-**Apagar usuário não existe de propósito**: desabilitar cobre o caso real e
-preserva o vínculo com as sessões históricas. Reset de senha também não — a
-recuperação por e-mail verificado é self-service desde a troca para TOTP.
+**Apagar usuário** remove a conta do Cognito e os grants da `Game-Access`.
+Não toca em sessões nem em progresso: esses registram o que a **plataforma**
+fez — que contas foram usadas, quais foram limpas — e apagar uma pessoa não
+pode reescrever isso. O efeito colateral é que reconvidar o mesmo e-mail
+retoma o progresso dele, que quase sempre é o que reconvidar significa.
+
+O Cognito é apagado primeiro: se os grants falharem depois, eles ficam
+inertes (ninguém entra para usá-los), enquanto a ordem inversa deixaria uma
+conta funcionando e sem acesso, sem explicação.
+
+**Reset de senha não existe** — a recuperação por e-mail verificado é
+self-service desde a troca para TOTP.
+
+**O convite** é versionado aqui, em `AdminCreateUserConfig.InviteMessageTemplate`.
+HTML, com o link da plataforma e o aviso de instalar o autenticador antes de
+começar — sem ele a pessoa trava no meio do primeiro acesso com um QR code e
+nada para ler. `{username}` e `{####}` são do Cognito e a mensagem é recusada
+sem os dois.
 
 Uma Lambda (`admin_users`) atende as sete rotas de `/admin`, em vez de seis
 funções. É exceção ao padrão do repositório, por serem operações raras,
