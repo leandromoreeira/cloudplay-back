@@ -140,6 +140,10 @@ Resources:
       ContentUri: layers/utils-layer/
       CompatibleRuntimes:
         - python3.9
+        # cleanup_result runs on 3.13 because it needs an SDK that knows
+        # VPC Lattice. The layer is plain .py with nothing compiled, so the
+        # same content serves both.
+        - python3.13
       RetentionPolicy: Retain
     Metadata:
       BuildMethod: python3.9
@@ -703,7 +707,11 @@ Resources:
           MAX_CLEANUP_ATTEMPTS: !Sub "${MaxCleanupAttempts}"
       CodeUri: games/cleanup_result/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      # The one function not on python3.9: it asks the game account whether
+      # VPC Lattice still holds anything, and the SDK baked into the 3.9
+      # runtime predates that service. A client it cannot build counts as a
+      # check that failed, which would quarantine healthy accounts.
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -716,6 +724,16 @@ Resources:
             - Effect: Allow
               Action: ses:SendEmail
               Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AlertEmail}"
+            # Reading the account before letting it back into the pool. Same
+            # shape as the other functions: any account, one role name, this
+            # organization only.
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::*:role/${GameAccountRoleName}"
+              Condition:
+                StringEquals:
+                  aws:ResourceOrgID: !Ref OrganizationId
       Architectures:
         - x86_64
       Events:

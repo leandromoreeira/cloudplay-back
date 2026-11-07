@@ -11,8 +11,16 @@ from tests.conftest import ACCOUNT_A, load_handler, sent_emails
 
 
 @pytest.fixture
-def handler(accounts_table, sessions_table):
-    return load_handler('cleanup_result')
+def handler(accounts_table, sessions_table, monkeypatch):
+    module = load_handler('cleanup_result')
+    # Every release now asks the account whether it is really empty. Here it
+    # always is, unless a test says otherwise; the sweep has its own file.
+    monkeypatch.setattr(module, '_still_standing', lambda *_: [])
+    return module
+
+
+def dirty(handler, monkeypatch, *leftovers):
+    monkeypatch.setattr(handler, '_still_standing', lambda *_: list(leftovers))
 
 
 BUILD_ID = 'aws-jam-account-cleanup:abc-123'
@@ -216,4 +224,86 @@ def test_the_projects_placeholder_is_not_an_account(accounts_table, handler):
 
     handler.lambda_handler(build_event('SUCCEEDED', account='unset'), None)
 
+    assert status_of(accounts_table) == 'CLEANING'
+
+
+# --- a green build is not proof the account is empty ------------------------
+
+def test_a_successful_build_over_a_dirty_account_does_not_free_it(
+    accounts_table, sessions_table, handler, monkeypatch
+):
+    given(accounts_table)
+    a_session(sessions_table)
+    dirty(handler, monkeypatch, 'S3 bucket jam-111111111111')
+
+    handler.lambda_handler(build_event('SUCCEEDED'), None)
+
+    # This is the 03/11/2026 failure. aws-nuke could not read the bucket,
+    # dropped it from its own inventory and exited 0; the account went back
+    # into the pool holding it.
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    assert item['status'] == 'CLEANING'
+    assert item['cleanup_attempts'] == 1
+    assert session_status(sessions_table) == 'CLEANUP_FAILED'
+
+
+def test_the_reason_names_what_was_left_behind(accounts_table, handler, monkeypatch):
+    given(accounts_table)
+    dirty(handler, monkeypatch,
+          'S3 bucket jam-111111111111', 'VPC Lattice service network jam-net')
+
+    handler.lambda_handler(build_event('SUCCEEDED'), None)
+
+    reason = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']['failure_reason']
+    # The alert is the only place a person sees this, and "cleanup failed"
+    # on its own sends them to read build logs that say SUCCEEDED.
+    assert 'SUCCEEDED' in reason
+    assert 'jam-111111111111' in reason
+    assert 'jam-net' in reason
+
+
+def test_a_dirty_account_also_reaches_quarantine(
+    accounts_table, handler, monkeypatch, verified_sender
+):
+    given(accounts_table)
+    accounts_table.update_item(
+        Key={'account_id': ACCOUNT_A},
+        UpdateExpression='SET cleanup_attempts = :n',
+        ExpressionAttributeValues={':n': 2},
+    )
+    dirty(handler, monkeypatch, 'S3 bucket jam-111111111111')
+
+    handler.lambda_handler(build_event('SUCCEEDED'), None)
+
+    # Nothing new was built for this: it rides the retry and quarantine the
+    # failed-build path already had.
+    item = accounts_table.get_item(Key={'account_id': ACCOUNT_A})['Item']
+    assert item['status'] == 'QUARANTINED'
+    assert len(sent_emails()) == 1
+
+
+def test_the_account_is_swept_before_it_is_released(accounts_table, handler, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        handler, '_still_standing',
+        lambda manager, account_id: asked.append(account_id) or []
+    )
+    given(accounts_table)
+
+    handler.lambda_handler(build_event('SUCCEEDED'), None)
+
+    assert asked == [ACCOUNT_A]
+    assert status_of(accounts_table) == 'AVAILABLE'
+
+
+def test_a_failed_build_is_not_swept(accounts_table, handler, monkeypatch):
+    def refuse(*_):
+        raise AssertionError('no point asking: the account was never wiped')
+
+    monkeypatch.setattr(handler, '_still_standing', refuse)
+    given(accounts_table)
+
+    handler.lambda_handler(build_event('FAILED'), None)
+
+    # Two cross-account calls on a path that is already going to retry.
     assert status_of(accounts_table) == 'CLEANING'

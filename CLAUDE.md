@@ -243,9 +243,61 @@ A sessão dura 15 min e não faz nada além de ler, gravar e apagar bucket
 policy. Depois disso a `CloudPlayGameRole` volta a funcionar e esvazia o
 bucket normalmente.
 
-**O pipeline ainda confia no exit code do nuke.** Enquanto não houver
-verificação pós-nuke de que a conta ficou vazia, uma limpeza incompleta
-continua passando por bem-sucedida.
+### A conta é conferida antes de voltar ao pool
+
+Por isso o `cleanup_result` **não acredita no exit code**. Antes de
+`mark_available` ele pergunta à própria conta o que ainda existe
+(`layers/utils-layer/account_sweep.py`), e achando qualquer coisa trata o
+build verde exatamente como um build que falhou: `record_cleanup_failure`,
+janitor retenta, e após `MaxCleanupAttempts` quarentena com e-mail. Nenhum
+encanamento novo — o motivo gravado é que muda, e ele nomeia o que sobrou,
+senão o alerta manda a pessoa ler um log que diz `SUCCEEDED`.
+
+Duas regras valem mais que a lista de sondas:
+
+- **A verificação vive fora do aws-nuke.** Conferir com a ferramenta que tem
+  o ponto cego não acha o ponto cego — um segundo run em dry-run teria
+  passado neste caso.
+- **Erro conta como suja, nunca como vazia.** O `except` é largo de
+  propósito: exceção escapando do `cleanup_result` deixa a conta `CLEANING`
+  **sem** `cleanup_failed_at`, e o janitor só retenta quem tem esse atributo.
+  Seria a mesma falha numa camada nova.
+
+Falso positivo é barato: deleção na AWS é eventualmente consistente, então
+uma conta recém-limpa pode listar algo por instantes. Isso custa um ciclo de
+retry, não uma quarentena.
+
+### O que o aws-nuke não cobre, e como essa lista foi feita
+
+**O aws-nuke não documenta o que não cobre.** A página de recursos lista
+~610 tipos e em lugar nenhum diz o que ficou de fora. A lista abaixo saiu de
+cruzar os `AWS::*::*` dos templates do `cloudraiser-games` (188 tipos, 57
+serviços) contra aquele índice:
+
+| Game | Serviço sem lister | Sondado aqui |
+|---|---|---|
+| game150 | VpcLattice | **sim** |
+| game148 | RefactorSpaces | não |
+| game158 | Evidently | não |
+| game167 | DevOpsGuru | não |
+| game156 | EMRContainers | não |
+| game159 | KafkaConnect | não |
+
+Só importa quando o `DeleteStack` não completa — com a stack apagada direito
+esses recursos vão junto. O nuke é a rede, e a rede tem esses seis furos.
+
+Acrescentar um serviço é uma linha em `PROBES`. O que ainda falta é um check
+de CI no repo de games que refaça esse cruzamento e avise quando um game novo
+trouxer serviço não coberto; sem ele a tabela envelhece em silêncio.
+
+`EC2::VPCEndpointService` (game174, PrivateLink) **é** coberto — aquela falha
+foi ENI, não cobertura. Não confunda com o game150.
+
+**O `cleanup_result` é a única função em python3.13.** O SDK embutido no
+runtime 3.9 é anterior ao VPC Lattice, e um cliente que não dá para construir
+viraria "não pôde ser conferido" em toda limpeza, quarentenando conta sadia.
+As outras nove continuam em 3.9, que já está fora de suporte — isso é dívida
+conhecida, não decisão.
 
 ## CORS
 

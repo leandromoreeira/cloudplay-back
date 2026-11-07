@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
 from account_manager import get_account_manager
+from account_sweep import client_factory, leftovers
 
 # How many times a wipe may fail before a person has to look at it.
 MAX_ATTEMPTS = int(os.environ.get('MAX_CLEANUP_ATTEMPTS', '3'))
@@ -82,6 +83,18 @@ def _close_session(account_id, build_id, stack_status):
     print(f"No session in {account_id} is waiting on build {wanted}")
 
 
+def _still_standing(account_manager, account_id):
+    """
+    What the nuke left behind, if anything.
+
+    A build that exits 0 is the nuke's opinion of its own work, and it has
+    been wrong: a bucket it could not read vanished from its inventory
+    instead of failing the run. This asks the account directly, and an
+    answer it cannot get counts as something being there.
+    """
+    return leftovers(client_factory(account_manager, account_id))
+
+
 def lambda_handler(event, context):
     detail = event.get('detail', {})
     status = detail.get('build-status')
@@ -95,17 +108,28 @@ def lambda_handler(event, context):
     account_manager = get_account_manager()
 
     if status == 'SUCCEEDED':
-        account_manager.mark_available(account_id)
-        _close_session(account_id, build_id, 'CLEANUP_COMPLETE')
-        print(f"Account {account_id} wiped, back in the pool")
-        return
+        found = _still_standing(account_manager, account_id)
+        if not found:
+            account_manager.mark_available(account_id)
+            _close_session(account_id, build_id, 'CLEANUP_COMPLETE')
+            print(f"Account {account_id} wiped, back in the pool")
+            return
 
-    # Most failures here are not a broken account, they are an account AWS
-    # has not finished letting go of: an ENI left by a Lambda in a VPC takes
-    # tens of minutes to be released, and it holds the security group, the
-    # subnet and the VPC behind it. Quarantining on the first failure turned
-    # that wait into a human errand, and three of them emptied the pool.
-    reason = f"cleanup build {status}: {build_id}"
+        # The dangerous case, and the reason this check exists: the build
+        # is happy and the account is not empty. Treated exactly like a
+        # failed build, so the retry and quarantine already in place do the
+        # rest.
+        print(f"Account {account_id} is not empty after a successful wipe: {found}")
+        reason = (f"cleanup build SUCCEEDED but {account_id} still holds: "
+                  + '; '.join(found))
+    else:
+        # Most failures here are not a broken account, they are an account AWS
+        # has not finished letting go of: an ENI left by a Lambda in a VPC takes
+        # tens of minutes to be released, and it holds the security group, the
+        # subnet and the VPC behind it. Quarantining on the first failure turned
+        # that wait into a human errand, and three of them emptied the pool.
+        reason = f"cleanup build {status}: {build_id}"
+
     attempts = account_manager.record_cleanup_failure(account_id, reason)
 
     if attempts >= MAX_ATTEMPTS:
