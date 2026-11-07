@@ -439,6 +439,145 @@ Resources:
         - Type: EMAIL
           Address: !Ref AlertEmail
 
+  # --- Getting back into a bucket a player locked -------------------------
+  #
+  # Several games ask the player to write an S3 bucket policy; game19 is
+  # that exercise and nothing else. A policy that denies every principal
+  # is a correct-looking answer, and an explicit Deny in a resource policy
+  # beats any IAM allow — so it locks out CloudPlayGameRole too, the nuke
+  # cannot delete the bucket, and the account cannot go back to the pool.
+  # It happened on 03/11/2026 and cost two of the three pool accounts.
+  #
+  # The only documented way back in is a task-scoped root session:
+  #
+  #   aws sts assume-root --target-principal <account-id> \
+  #       --task-policy-arn arn=arn:aws:iam::aws:policy/root-task/S3UnlockBucketPolicy
+  #   aws s3api delete-bucket-policy --bucket <name>   # with those creds
+  #
+  # The session lasts 15 minutes and can do nothing but read, write and
+  # delete a bucket policy. The recipe is in docs/RUNBOOK.md.
+  #
+  # Only RootSessions is turned on. RootCredentialsManagement is the other
+  # half of centralized root access and is deliberately left alone: it
+  # strips root passwords from member accounts and stops password
+  # recovery, which is a much larger decision than reaching one bucket.
+  #
+  # This is a custom resource because neither call has a CloudFormation
+  # resource type — checked against the registry of this account, not
+  # assumed. AWS::Organizations::* covers Account, Organization,
+  # OrganizationalUnit, Policy, ResourcePolicy, ResponsibilityTransfer and
+  # Root, and AWS::IAM::* has nothing for organization features.
+
+  RootSessionsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: enable-root-sessions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # None of these take a resource ARN: they are switches on the
+              # organization itself. Note what is absent —
+              # EnableOrganizationsRootCredentialsManagement and
+              # RegisterDelegatedAdministrator. This function can turn on
+              # the privileged-task feature and nothing else.
+              - Effect: Allow
+                Action:
+                  - "iam:EnableOrganizationsRootSessions"
+                  - "iam:ListOrganizationsFeatures"
+                  - "organizations:EnableAWSServiceAccess"
+                  - "organizations:ListAWSServiceAccessForOrganization"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+
+  RootSessionsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt RootSessionsFunctionRole.Arn
+      # Trusted access takes a little while to propagate before IAM will
+      # accept the second call, and the retry loop below waits up to four
+      # minutes for it.
+      Timeout: 300
+      Code:
+        ZipFile: |
+          """Turn on IAM root sessions for the organization.
+
+          Two calls in order: trusted access for IAM in Organizations,
+          then the RootSessions feature. Both are idempotent, so a repeat
+          deploy is a no-op rather than an error.
+          """
+          import time
+
+          import boto3
+          import cfnresponse
+
+          SERVICE_PRINCIPAL = 'iam.amazonaws.com'
+          PHYSICAL_ID = 'organizations-root-sessions'
+
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      # Deliberately does nothing. Turning root sessions off
+                      # would take away the only route back into a bucket a
+                      # player locked — and a failed update of this stack
+                      # rolls back by deleting the new resource, which would
+                      # pull the capability without anyone asking. Removing
+                      # it is a decision to make on purpose:
+                      #   aws iam disable-organizations-root-sessions
+                      cfnresponse.send(
+                          event, context, cfnresponse.SUCCESS, {}, PHYSICAL_ID,
+                          reason='Left enabled on purpose; see the template',
+                      )
+                      return
+
+                  boto3.client('organizations').enable_aws_service_access(
+                      ServicePrincipal=SERVICE_PRINCIPAL)
+
+                  iam = boto3.client('iam')
+                  deadline = time.time() + 240
+                  while True:
+                      try:
+                          enabled = iam.enable_organizations_root_sessions()
+                          break
+                      except iam.exceptions.ServiceAccessNotEnabledException:
+                          if time.time() >= deadline:
+                              raise
+                          time.sleep(10)
+
+                  cfnresponse.send(
+                      event, context, cfnresponse.SUCCESS,
+                      {'EnabledFeatures': ','.join(enabled['EnabledFeatures'])},
+                      PHYSICAL_ID,
+                  )
+              except Exception as error:  # noqa: BLE001
+                  # Any escape without a reply leaves CloudFormation waiting
+                  # an hour before it gives up on this stack.
+                  cfnresponse.send(
+                      event, context, cfnresponse.FAILED, {}, PHYSICAL_ID,
+                      reason=str(error)[:1000],
+                  )
+
+  OrganizationsRootSessions:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt RootSessionsFunction.Arn
+
+
 Outputs:
   OrganizationalUnitId:
     Description: "Pass this to manage_accounts.py provision --ou-id"
@@ -455,3 +594,7 @@ Outputs:
   BudgetFreezeRoleArn:
     Description: "Role AWS Budgets assumes to attach the freeze policy"
     Value: !GetAtt BudgetFreezeRole.Arn
+
+  RootSessionsEnabled:
+    Description: "Centralized root access features this stack turned on"
+    Value: !GetAtt OrganizationsRootSessions.EnabledFeatures

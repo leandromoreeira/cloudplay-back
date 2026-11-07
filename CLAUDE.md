@@ -203,6 +203,50 @@ não estiver `CLEANING` no DynamoDB.
 O nuke preserva a `HengHaTeamRole` e a `HengHaGuardrails`, mas **não** a
 `GamePolicy` — a conta volta ao pool com a role e os guardrails e nada mais.
 
+### O nuke não enxerga bucket que trancou todo mundo
+
+Vários games pedem para o aluno escrever uma bucket policy; o game19 é só
+isso. Uma policy que nega todo principal é uma resposta de aparência
+correta, e `Deny` em policy de recurso vence qualquer allow de IAM — então
+tranca a `CloudPlayGameRole` junto.
+
+O pior não é o bucket ficar de pé, é o **build terminar verde**. No
+`resources/s3-bucket.go` do aws-nuke v3.68.3, o lister de `S3Bucket` chama
+`GetBucketTagging` e, em erro que não seja `NoSuchTagSet`, dá `continue` sem
+anexar o bucket à lista. Com a policy do aluno isso volta `AccessDenied`, o
+bucket **some do inventário** — nem entra na conta de "filtered" — e o nuke
+reporta `0 nukeable`, exit 0. A conta volta ao pool suja.
+
+O nome do bucket do game19 é `jam-${AWS::AccountId}`, determinístico: com o
+órfão de pé, toda sessão seguinte daquele game naquela conta falha no
+`CreateStack`. Em 03/11/2026 isso derrubou duas das três contas do pool e o
+aluno rodou oito sessões com zero task concluída antes de alguém notar.
+
+A saída é sessão de root com escopo de tarefa — nenhuma role de IAM serve,
+nem a `OrganizationAccountAccessRole`. A capacidade é ligada pela stack
+`cloudplay-org` (custom resource `OrganizationsRootSessions`, que não tem
+tipo nativo no CloudFormation) e só a feature `RootSessions`, nunca
+`RootCredentialsManagement`:
+
+```bash
+eval "$(aws sts assume-root --target-principal <conta> \
+    --task-policy-arn arn=arn:aws:iam::aws:policy/root-task/S3UnlockBucketPolicy \
+    --query 'Credentials.[
+       `export`,
+       join(`=`,[`AWS_ACCESS_KEY_ID`,AccessKeyId]),
+       join(`=`,[`AWS_SECRET_ACCESS_KEY`,SecretAccessKey]),
+       join(`=`,[`AWS_SESSION_TOKEN`,SessionToken])]' --output text)"
+aws s3api delete-bucket-policy --bucket jam-<conta>
+```
+
+A sessão dura 15 min e não faz nada além de ler, gravar e apagar bucket
+policy. Depois disso a `CloudPlayGameRole` volta a funcionar e esvazia o
+bucket normalmente.
+
+**O pipeline ainda confia no exit code do nuke.** Enquanto não houver
+verificação pós-nuke de que a conta ficou vazia, uma limpeza incompleta
+continua passando por bem-sucedida.
+
 ## CORS
 
 Uma origem só, nunca `*`: por padrão a distribuição CloudFront desta própria
