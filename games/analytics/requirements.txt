@@ -1,0 +1,5 @@
+# Pinned on purpose. Unpinned, sam build only reinstalls what changed, so the
+# fleet drifted into three versions at once (1.40.1, 1.42.97, 1.43.126) and
+# which one a function got depended on when it was last touched. Bump this
+# deliberately, in one commit, for all of them.
+boto3==1.43.126

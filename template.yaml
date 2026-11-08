@@ -139,14 +139,10 @@ Resources:
       Description: Shared utilities for game management including account_manager
       ContentUri: layers/utils-layer/
       CompatibleRuntimes:
-        - python3.9
-        # cleanup_result runs on 3.13 because it needs an SDK that knows
-        # VPC Lattice. The layer is plain .py with nothing compiled, so the
-        # same content serves both.
         - python3.13
       RetentionPolicy: Retain
     Metadata:
-      BuildMethod: python3.9
+      BuildMethod: python3.13
 
   GamesTable:
     Type: AWS::DynamoDB::Table
@@ -259,7 +255,7 @@ Resources:
     Properties:
       CodeUri: games/get_games/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -286,7 +282,7 @@ Resources:
     Properties:
       CodeUri: games/get_game_by_id/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -313,7 +309,7 @@ Resources:
     Properties:
       CodeUri: games/get_game_session/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -352,7 +348,7 @@ Resources:
     Properties:
       CodeUri: games/start_game_session/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -394,7 +390,7 @@ Resources:
     Properties:
       CodeUri: games/end_game_session/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Environment:
@@ -443,7 +439,7 @@ Resources:
     Properties:
       CodeUri: games/submit_task_answer/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -490,7 +486,7 @@ Resources:
     Properties:
       CodeUri: games/get_account_status/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -673,7 +669,7 @@ Resources:
     Properties:
       CodeUri: games/stack_events/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -707,11 +703,13 @@ Resources:
           MAX_CLEANUP_ATTEMPTS: !Sub "${MaxCleanupAttempts}"
       CodeUri: games/cleanup_result/
       Handler: app.lambda_handler
-      # The one function not on python3.9: it asks the game account whether
-      # VPC Lattice still holds anything, and the SDK baked into the 3.9
-      # runtime predates that service. A client it cannot build counts as a
-      # check that failed, which would quarantine healthy accounts.
       Runtime: python3.13
+      # Above the 30s default because this one talks to another account
+      # before releasing it. The sweep gives up on its own well before here;
+      # the margin exists so that even a pathological probe gets to record
+      # what it found. Dying instead would leave the account CLEANING with
+      # no cleanup_failed_at, which the janitor never revisits.
+      Timeout: 120
       Layers:
         - !Ref UtilsLayer
       Policies:
@@ -762,7 +760,7 @@ Resources:
     Properties:
       CodeUri: games/session_janitor/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       # A sweep can start several builds in a row, which the 30s default in
       # Globals is too tight for.
       Timeout: 120
@@ -817,7 +815,7 @@ Resources:
     Properties:
       CodeUri: games/console_access/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Environment:
@@ -956,7 +954,7 @@ Resources:
     Properties:
       CodeUri: games/admin_users/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Environment:
@@ -1048,7 +1046,7 @@ Resources:
     Properties:
       CodeUri: games/analytics/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.13
       Layers:
         - !Ref UtilsLayer
       Policies:

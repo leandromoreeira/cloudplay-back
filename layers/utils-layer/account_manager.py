@@ -294,12 +294,15 @@ class AccountManager:
 
         return item.get('role_name') or DEFAULT_ROLE_NAME
 
-    def assume_cross_account_role(self, account_id: str) -> Dict[str, Any]:
+    def assume_cross_account_role(self, account_id: str, config=None) -> Dict[str, Any]:
         """
         Assume the orchestrator's role in the target account.
 
         Args:
             account_id: Target AWS account ID
+            config: botocore Config for this call alone, for a caller that
+                cannot afford botocore's default patience — a minute of read
+                timeout, retried, outlives most Lambda timeouts.
 
         Returns:
             dict: Temporary credentials for the target account
@@ -309,9 +312,10 @@ class AccountManager:
         """
         role_arn = f"arn:aws:iam::{account_id}:role/{self._role_name_for(account_id)}"
         role_session_name = f"GameDeployment-{account_id}"
+        sts = boto3.client('sts', config=config) if config else self.sts_client
 
         try:
-            response = self.sts_client.assume_role(
+            response = sts.assume_role(
                 RoleArn=role_arn,
                 RoleSessionName=role_session_name,
                 DurationSeconds=3600  # 1 hour should be enough for deployment
@@ -335,25 +339,30 @@ class AccountManager:
         """The account the Lambdas run in, i.e. who the team role must trust."""
         return self.sts_client.get_caller_identity()['Account']
 
-    def create_cross_account_client(self, account_id: str, service_name: str):
+    def create_cross_account_client(self, account_id: str, service_name: str,
+                                    config=None):
         """
         Create a boto3 client for any service inside a game account.
 
         Args:
             account_id: Target AWS account ID
             service_name: e.g. 'cloudformation', 'iam'
+            config: botocore Config applied to both the AssumeRole and the
+                client it returns, so a caller working against a deadline
+                bounds the whole round trip and not just half of it.
 
         Returns:
             A boto3 client authenticated into the target account
         """
-        credentials = self.assume_cross_account_role(account_id)
+        credentials = self.assume_cross_account_role(account_id, config=config)
 
         return boto3.client(
             service_name,
             aws_access_key_id=credentials['AccessKeyId'],
             aws_secret_access_key=credentials['SecretAccessKey'],
             aws_session_token=credentials['SessionToken'],
-            region_name=os.environ.get('AWS_REGION', 'us-east-1')
+            region_name=os.environ.get('AWS_REGION', 'us-east-1'),
+            config=config,
         )
 
     def create_cross_account_clients(self, account_id: str):

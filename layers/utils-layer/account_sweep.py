@@ -27,9 +27,28 @@ crossing is in the backend CLAUDE.md, with the four services still
 uncovered here.
 """
 
+import time
 from collections import namedtuple
 
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+# Botocore's defaults are a minute of read timeout, retried — longer than the
+# Lambda this runs in is allowed to live. A probe that hangs would then kill
+# the handler instead of reporting, and an exception out of cleanup_result
+# leaves the account CLEANING with no cleanup_failed_at, which is the one
+# state the janitor never comes back for. Short and few, so a dead endpoint
+# costs seconds and lands in the report.
+PROBE_CONFIG = Config(
+    connect_timeout=3,
+    read_timeout=5,
+    retries={'max_attempts': 2, 'mode': 'standard'},
+)
+
+# Wall clock for the whole sweep, checked between probes. The per-call config
+# bounds one call; this bounds the sum, so there is always time left to write
+# the answer down. Deliberately well under the function's own timeout.
+BUDGET_SECONDS = 45
 
 # service:     the boto3 client to build inside the game account
 # operation:   a list call that needs no parent resource
@@ -58,7 +77,8 @@ PROBES = (
 )
 
 
-def leftovers(client_for, probes=PROBES):
+def leftovers(client_for, probes=PROBES, budget_seconds=BUDGET_SECONDS,
+              now=time.monotonic):
     """
     Everything still standing in the account, as lines a person can read.
 
@@ -68,10 +88,19 @@ def leftovers(client_for, probes=PROBES):
     Deliberately not paginated: the question is whether anything is left,
     and the first page answers it. Counting them exactly would cost calls
     and change no decision.
+
+    Past `budget_seconds` the remaining probes are reported as unchecked
+    rather than attempted — which counts against the account, like every
+    other answer this cannot get.
     """
     found = []
+    deadline = now() + budget_seconds
 
     for probe in probes:
+        if now() >= deadline:
+            found.append(f'{probe.label}: could not be checked (out of time)')
+            continue
+
         try:
             client = client_for(probe.service)
             answer = getattr(client, probe.operation)()
@@ -115,7 +144,7 @@ def client_factory(account_manager, account_id):
     def client_for(service):
         if service not in cache:
             cache[service] = account_manager.create_cross_account_client(
-                account_id, service
+                account_id, service, config=PROBE_CONFIG
             )
         return cache[service]
 

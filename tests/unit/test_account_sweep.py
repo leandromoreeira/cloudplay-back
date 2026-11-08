@@ -10,7 +10,9 @@ counts against the account rather than for it.
 import pytest
 from botocore.exceptions import ClientError, UnknownServiceError
 
-from account_sweep import PROBES, Probe, client_factory, leftovers
+from account_sweep import (
+    BUDGET_SECONDS, PROBE_CONFIG, PROBES, Probe, client_factory, leftovers,
+)
 
 ACCOUNT = '111111111111'
 
@@ -136,9 +138,11 @@ def test_lattice_is_covered_because_aws_nuke_does_not_cover_it():
 class CountingManager:
     def __init__(self):
         self.calls = []
+        self.configs = []
 
-    def create_cross_account_client(self, account_id, service_name):
+    def create_cross_account_client(self, account_id, service_name, config=None):
         self.calls.append((account_id, service_name))
+        self.configs.append(config)
         return FakeClient()
 
 
@@ -177,3 +181,85 @@ def test_a_probe_that_blows_up_reports_instead_of_escaping():
     # cleanup_failed_at, and the janitor only comes back for accounts that
     # have one — out of the pool forever, silently.
     assert found == ['S3 bucket: could not be checked (RuntimeError)']
+
+
+def test_the_probes_do_not_wait_the_way_botocore_would():
+    manager = CountingManager()
+
+    leftovers(client_factory(manager, ACCOUNT))
+
+    # A minute of read timeout, retried, outlives the function. Hanging is
+    # the one outcome that must not happen here: an exception escaping
+    # cleanup_result leaves the account CLEANING with no cleanup_failed_at,
+    # and nothing comes back for it.
+    assert all(config is PROBE_CONFIG for config in manager.configs)
+    assert PROBE_CONFIG.connect_timeout <= 5
+    assert PROBE_CONFIG.read_timeout <= 10
+    assert PROBE_CONFIG.retries['max_attempts'] <= 2
+
+
+# --- the budget -------------------------------------------------------------
+
+class Clock:
+    """A clock the test moves, so no test ever waits for one."""
+
+    def __init__(self, step=0):
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self):
+        reading = self.now
+        self.now += self.step
+        return reading
+
+
+def test_a_sweep_that_runs_long_reports_instead_of_running_on():
+    # Half a minute per reading: the first probe fits inside the budget and
+    # the rest do not.
+    found = leftovers(
+        clients(
+            s3=FakeClient(list_buckets={'Buckets': [{'Name': 'jam-1'}]}),
+            **{'vpc-lattice': FakeClient()},
+        ),
+        now=Clock(step=30),
+    )
+
+    # What was learned before the clock ran out is kept, and the rest counts
+    # against the account rather than being passed over in silence.
+    assert found[0] == 'S3 bucket jam-1'
+    assert len(found) == 4
+    assert all('out of time' in line for line in found[1:])
+
+
+def test_running_out_of_time_immediately_clears_nobody():
+    found = leftovers(
+        clients(
+            s3=FakeClient(list_buckets={'Buckets': []}),
+            **{'vpc-lattice': FakeClient()},
+        ),
+        now=Clock(step=60),
+    )
+
+    # An empty list is the one answer that releases an account. A sweep that
+    # never ran must never produce it.
+    assert len(found) == 4
+    assert found != []
+
+
+def test_a_quick_sweep_spends_none_of_its_budget():
+    found = leftovers(
+        clients(
+            s3=FakeClient(list_buckets={'Buckets': []}),
+            **{'vpc-lattice': FakeClient()},
+        ),
+        now=Clock(step=0.01),
+    )
+
+    assert found == []
+
+
+def test_the_budget_leaves_the_function_room_to_write_the_answer():
+    # cleanup_result is given 120s in template.yaml. The budget has to be
+    # far enough under it that the last probe, the two AssumeRole calls and
+    # the DynamoDB write all still fit.
+    assert BUDGET_SECONDS <= 60
