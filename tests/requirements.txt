@@ -7,3 +7,6 @@ requests
 # moto's Cognito backend imports this; without it every admin test errors
 # on import rather than failing with something that explains itself.
 joserfc
+
+# Lido pelo test_api_surface.py, que confere o template contra os handlers.
+PyYAML

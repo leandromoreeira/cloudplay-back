@@ -1020,6 +1020,14 @@ Resources:
             RestApiId: !Ref RestApi
             Auth:
               Authorizer: CognitoAuthorizer
+        DeleteUser:
+          Type: Api
+          Properties:
+            Path: /admin/users/{email}
+            Method: delete
+            RestApiId: !Ref RestApi
+            Auth:
+              Authorizer: CognitoAuthorizer
         ResetMfa:
           Type: Api
           Properties:
@@ -1077,7 +1085,7 @@ Resources:
       EndpointConfiguration:
         Type: REGIONAL
       Cors:
-        AllowMethods: "'GET,POST,PATCH,PUT,OPTIONS'"
+        AllowMethods: "'GET,POST,PATCH,PUT,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
         AllowOrigin: !If
           - UseOwnFrontend

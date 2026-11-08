@@ -343,6 +343,22 @@ São **três** lugares, e esquecer o terceiro foi o bug:
 
 Um teste varre `games/*/app.py` atrás de `'*'` para a estrela não voltar.
 
+**E um quarto lugar, que não é CORS mas se disfarça de CORS:** o método
+precisa existir no API Gateway. O `DELETE /admin/users/{email}` foi escrito,
+testado, permitido no IAM e deployado em 06/11/2026 sem evento `Api` no
+template e sem `DELETE` no `AllowMethods` — nada o atendia. O API Gateway
+responde método não configurado com **403 `MissingAuthenticationToken`**, e o
+browser relata isso como erro de CORS, o que manda a pessoa investigar
+cabeçalho em vez de roteamento.
+
+Teste unitário não pega: ele chama `lambda_handler` direto e nunca passa pelo
+API Gateway. Quem pega é o `tests/unit/test_api_surface.py`, que lê o
+`template.yaml` e cruza com o roteamento dos handlers — toda rota que um
+handler atende tem que ter evento, e todo método tem que estar no
+`AllowMethods`. Ele lê o `if route == ... / method == ...` por AST, e tem um
+teste-canário que falha se o roteamento for reescrito num formato que ele não
+saiba ler (senão passaria por não achar nada).
+
 ## Autenticação
 
 Cognito user pool `us-east-1_WoKQuKpZv`, tier Essentials, criação só por admin.
