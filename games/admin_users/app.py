@@ -28,6 +28,9 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 # Import from Lambda Layer
+import game_progress
+
+# Import from Lambda Layer
 import cors
 from access_control import (
     ADMIN_GROUP,
@@ -276,10 +279,26 @@ def list_catalogue():
 
 
 def list_grants(target):
+    """
+    What this player may play, and how far they got in each.
+
+    progress only mentions games they have touched; anything missing is
+    todo, which is the same default the catalogue listing applies. One
+    Query, no scan — the expensive read on this screen is the catalogue,
+    and GET /admin/games already pays it.
+
+    It is here rather than in the catalogue endpoint because this one is
+    already about a person, and that one is deliberately not.
+    """
     items = _access_table().query(
         KeyConditionExpression=Key('user_email').eq(target)
     ).get('Items', [])
-    return _response(200, {'email': target, 'games': sorted(i['game_id'] for i in items)})
+
+    return _response(200, {
+        'email': target,
+        'games': sorted(i['game_id'] for i in items),
+        'progress': game_progress.statuses_for(target),
+    })
 
 
 def set_grants(target, body):

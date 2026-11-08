@@ -483,6 +483,17 @@ de três palavras exatas.
 uma lista que o aluno não vê e páginas chegam curtas. Valor desconhecido é
 400: devolver vazio pareceria "você não jogou nada".
 
+`GET /admin/users/{email}/games` devolve, além dos grants, um `progress`
+com `{game_id: status}` — só os games que a pessoa tocou, porque o resto é
+`todo` por padrão e mandar 173 linhas para dizer nada seria desperdício. É
+uma Query no `Game-Progress`, sem scan: a leitura cara daquela tela é o
+catálogo, e o `GET /admin/games` já a paga.
+
+Fica nesse endpoint e não no do catálogo porque este já é sobre uma pessoa e
+aquele deliberadamente não é. `games` e `progress` são **independentes**: um
+aluno `full-access` não tem linha de grant nenhuma, e um grant revogado não
+apaga o que já foi jogado.
+
 `GET /admin/games` existe porque o `GET /games` normal é filtrado pelo acesso
 de quem chama: um admin fora do `full-access` veria um catálogo incompleto
 justamente na tela de conceder acesso. Devolve só `id`, `title`, `category` e

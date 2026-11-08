@@ -965,6 +965,10 @@ Resources:
             TableName: !Ref GameAccessTable
         - DynamoDBReadPolicy:
             TableName: !Ref GamesTable
+        # Read-only: the grants page says how far the player got in each
+        # game it offers to grant. Nothing here ever writes progress.
+        - DynamoDBReadPolicy:
+            TableName: !Ref GameProgressTable
         - Version: "2012-10-17"
           Statement:
             - Effect: Allow

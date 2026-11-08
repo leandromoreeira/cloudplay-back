@@ -17,7 +17,7 @@ PLAYER = 'player@example.com'
 
 
 @pytest.fixture
-def handler(user_pool, access_table, games_table):
+def handler(user_pool, access_table, games_table, progress_table):
     return load_handler('admin_users')
 
 
@@ -434,3 +434,57 @@ def test_a_player_cannot_delete_anyone(handler, user_pool):
                   groups='[full-access]', caller=PLAYER), None)
 
     assert response['statusCode'] == 403
+
+
+# --- how far the player got in what they were granted -----------------------
+
+def test_the_grants_say_where_the_player_stands_in_each_game(
+    handler, user_pool, access_table, progress_table
+):
+    for game_id in ('game1', 'game2', 'game3'):
+        access_table.put_item(Item={'user_email': PLAYER, 'game_id': game_id})
+    progress_table.put_item(Item={
+        'user_email': PLAYER, 'game_id': 'game1', 'playing': True,
+    })
+    progress_table.put_item(Item={
+        'user_email': PLAYER, 'game_id': 'game2',
+        'ever_completed_at': '2026-11-01T10:00:00Z',
+    })
+
+    body = body_of(handler.lambda_handler(
+        a_request('/admin/users/{email}/games', 'GET', email=PLAYER), None))
+
+    # game3 is absent rather than listed as todo: the catalogue listing
+    # already applies that default, and sending a row per untouched game
+    # would be 173 of them to say nothing.
+    assert body['progress'] == {'game1': 'in_progress', 'game2': 'done'}
+    assert body['games'] == ['game1', 'game2', 'game3']
+
+
+def test_a_player_who_has_played_nothing_reports_nothing(
+    handler, user_pool, access_table
+):
+    access_table.put_item(Item={'user_email': PLAYER, 'game_id': 'game1'})
+
+    body = body_of(handler.lambda_handler(
+        a_request('/admin/users/{email}/games', 'GET', email=PLAYER), None))
+
+    assert body['progress'] == {}
+
+
+def test_progress_covers_games_that_were_never_granted(
+    handler, user_pool, access_table, progress_table
+):
+    progress_table.put_item(Item={
+        'user_email': PLAYER, 'game_id': 'game9',
+        'ever_completed_at': '2026-11-01T10:00:00Z',
+    })
+
+    body = body_of(handler.lambda_handler(
+        a_request('/admin/users/{email}/games', 'GET', email=PLAYER), None))
+
+    # A full-access player holds no grant rows at all, and a grant can be
+    # revoked after the fact. Progress is what happened, not what is
+    # allowed, so the two lists are independent on purpose.
+    assert body['games'] == []
+    assert body['progress'] == {'game9': 'done'}
