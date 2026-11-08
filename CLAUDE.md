@@ -293,11 +293,36 @@ trouxer serviço não coberto; sem ele a tabela envelhece em silêncio.
 `EC2::VPCEndpointService` (game174, PrivateLink) **é** coberto — aquela falha
 foi ENI, não cobertura. Não confunda com o game150.
 
-**O `cleanup_result` é a única função em python3.13.** O SDK embutido no
-runtime 3.9 é anterior ao VPC Lattice, e um cliente que não dá para construir
-viraria "não pôde ser conferido" em toda limpeza, quarentenando conta sadia.
-As outras nove continuam em 3.9, que já está fora de suporte — isso é dívida
-conhecida, não decisão.
+### Runtime e boto3
+
+**Tudo em python3.13.** O 3.9 estava fora de suporte e a frota agora é
+uniforme, inclusive o `BuildMethod` e o `CompatibleRuntimes` da layer.
+
+**As treze funções empacotam o próprio boto3, na mesma versão fixa**
+(`boto3==1.43.126` em cada `requirements.txt`). Nenhuma depende do SDK do
+runtime — foi o pacote embutido que fez a varredura de Lattice funcionar, não
+a versão do Python.
+
+O pin existe porque o `sam build` só reinstala o que mudou: sem versão, a
+frota ficou em 1.40.1, 1.42.97 e 1.43.126 ao mesmo tempo, e qual delas uma
+função recebia dependia de quando ela tinha sido tocada pela última vez.
+Subir a versão é uma mudança deliberada, num commit, para todas. Depois de
+mexer em `requirements.txt`, `rm -rf .aws-sam` antes do build — senão o cache
+devolve o que já estava lá.
+
+### Timeouts da varredura
+
+O `cleanup_result` tem `Timeout: 120`, acima dos 30s do Globals, e a
+varredura usa `PROBE_CONFIG` (connect 3s, read 5s, 2 tentativas) mais um
+orçamento de 45s de relógio entre sondas.
+
+O padrão do botocore é um minuto de read timeout, com retry — mais do que a
+função pode viver. Uma sonda pendurada mataria o handler, e exceção saindo do
+`cleanup_result` deixa a conta `CLEANING` **sem** `cleanup_failed_at`, que é o
+único estado que o janitor nunca revisita. A margem até os 120s existe para
+que mesmo o pior caso ainda consiga gravar o que achou. Sonda que estoura o
+orçamento vira "could not be checked", como qualquer outra resposta que não
+veio — nunca lista vazia, que é o único retorno que libera a conta.
 
 ## CORS
 
@@ -355,9 +380,35 @@ então as séries começam ali.
 
 - `ending()` — operacional: `ended` / `expired` / `cleanup_failed` / `unknown`.
   Alimenta os contadores que o operador lê.
-- `outcome()` — o que aconteceu com a pessoa: `running` / `completed` /
-  `unfinished`. `completed` significa **todas as tasks do game concluídas
-  naquela sessão**, não "apertou parar".
+- `outcome()` — o que aconteceu com a pessoa: `failed_to_start` / `running` /
+  `completed` / `unfinished`. `completed` significa **todas as tasks do game
+  concluídas naquela sessão**, não "apertou parar".
+
+`failed_to_start` vem de `create_failed_at`, que o `stack_events` grava com
+`if_not_exists` num campo próprio quando o stack dá `CREATE_FAILED` ou
+`ROLLBACK_*`. Campo próprio porque **`stack_status` é um slot único que o
+teardown sobrescreve**: em `CLEANUP_COMPLETE` não resta vestígio de que o
+laboratório nunca subiu. Junto vai `create_failure_reason`, que é o
+`ResourceStatusReason` do evento de stack — a frase que diz qual recurso
+falhou, e que antes era parseada e descartada.
+
+A gravação da falha é **incondicional**, diferente da do status: se a criação
+falhou não depende da ordem em que o SNS entrega, e uma razão que chega
+atrasada ainda preenche um campo que ficou vazio (o `ROLLBACK_IN_PROGRESS`
+carrega o motivo, o `ROLLBACK_COMPLETE` atrás dele costuma não carregar).
+
+Ele vence `running`: depois do rollback não há laboratório, tenha a pessoa
+apertado parar ou não. E é o único dos quatro que **não fala do aluno** —
+antes disso aparecia como `unfinished`, que foi como oito tentativas
+quebradas do game19 em 03/11/2026 passaram por oito alunos desinteressados.
+
+O `per_game` conta `failed_to_start` por game. Uma coluna disso não é game
+impopular, é game quebrado — e é desse número que a flag de manutenção vai
+depender. A sessão continua contando em `sessions`: ela reivindicou uma conta
+e rodou um build de limpeza.
+
+**Nada disso recupera o passado.** As sessões anteriores a esta mudança não
+têm `create_failed_at`, e o `stack_status` delas já foi sobrescrito.
 
 O `ending` de cada sessão só vai para admin, numa coluna própria. Estavam na
 mesma coluna e isso era enganoso: uma limpeza que falhou depois não

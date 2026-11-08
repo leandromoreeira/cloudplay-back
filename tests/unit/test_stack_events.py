@@ -194,3 +194,103 @@ def test_several_events_in_one_delivery_are_all_read(handler, sessions_table):
 
     assert handler.lambda_handler(batch, None) == {'handled': 2}
     assert stored(sessions_table)['stack_status'] == 'CREATE_COMPLETE'
+
+
+# --- a lab that never came up -----------------------------------------------
+
+ROLLBACK_REASON = 'The following resource(s) failed to create: [JamBucket].'
+
+
+def test_a_rollback_is_remembered_somewhere_the_teardown_cannot_reach(
+    handler, sessions_table
+):
+    given_session(sessions_table)
+
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_IN_PROGRESS',
+        ResourceStatusReason=ROLLBACK_REASON,
+    ), None)
+
+    session = stored(sessions_table)
+    # stack_status is one slot and the teardown writes over it. Without a
+    # field of its own, nothing downstream can tell a lab that never built
+    # from a player who walked away.
+    assert session['create_failed_at'] == '2026-10-25T10:05:00.000Z'
+    assert session['create_failure_reason'] == ROLLBACK_REASON
+
+
+def test_the_teardown_cannot_erase_it(handler, sessions_table):
+    given_session(sessions_table)
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_IN_PROGRESS', ResourceStatusReason=ROLLBACK_REASON,
+    ), None)
+
+    # What end_game_session and cleanup_result do to the same row.
+    sessions_table.update_item(
+        Key={'session_id': SESSION_ID},
+        UpdateExpression='SET stack_status = :s',
+        ExpressionAttributeValues={':s': 'CLEANUP_COMPLETE'},
+    )
+
+    session = stored(sessions_table)
+    assert session['stack_status'] == 'CLEANUP_COMPLETE'
+    assert session['create_failure_reason'] == ROLLBACK_REASON
+
+
+def test_the_first_reason_is_the_one_kept(handler, sessions_table):
+    given_session(sessions_table)
+
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_IN_PROGRESS',
+        ResourceStatusReason=ROLLBACK_REASON,
+        Timestamp='2026-10-25T10:05:00.000Z',
+    ), None)
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_COMPLETE',
+        ResourceStatusReason='',
+        Timestamp='2026-10-25T10:06:00.000Z',
+    ), None)
+
+    # ROLLBACK_IN_PROGRESS carries the diagnosis; the COMPLETE behind it
+    # usually carries nothing. Last write wins would throw away the only
+    # sentence worth reading.
+    session = stored(sessions_table)
+    assert session['create_failure_reason'] == ROLLBACK_REASON
+    assert session['create_failed_at'] == '2026-10-25T10:05:00.000Z'
+
+
+def test_a_reason_arriving_late_still_fills_an_empty_slot(handler, sessions_table):
+    given_session(sessions_table)
+
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_COMPLETE', ResourceStatusReason='',
+        Timestamp='2026-10-25T10:06:00.000Z',
+    ), None)
+    handler.lambda_handler(notification(
+        ResourceStatus='ROLLBACK_IN_PROGRESS', ResourceStatusReason=ROLLBACK_REASON,
+        Timestamp='2026-10-25T10:05:00.000Z',
+    ), None)
+
+    # SNS does not promise order. The status write refuses this one for
+    # being older, but whether creation failed does not depend on order.
+    session = stored(sessions_table)
+    assert session['create_failure_reason'] == ROLLBACK_REASON
+    assert session['stack_status'] == 'ROLLBACK_COMPLETE'
+
+
+def test_a_healthy_stack_is_not_marked_as_failed(handler, sessions_table):
+    given_session(sessions_table)
+
+    handler.lambda_handler(notification(), None)
+
+    assert 'create_failed_at' not in stored(sessions_table)
+
+
+def test_a_failed_cleanup_is_not_a_lab_that_never_built(handler, sessions_table):
+    given_session(sessions_table)
+
+    handler.lambda_handler(notification(ResourceStatus='DELETE_FAILED'), None)
+
+    # The player got their lab. What broke afterwards is the platform's
+    # problem, and it already has a column of its own.
+    assert 'create_failed_at' not in stored(sessions_table)

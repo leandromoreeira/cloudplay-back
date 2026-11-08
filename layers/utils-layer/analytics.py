@@ -77,10 +77,19 @@ def outcome(session, task_count=None):
     player did, and one the janitor closed says only that they walked away
     — both were being shown in the same column as a verdict on them.
 
-    So: still up, finished everything, or did not. Completing means every
-    task of the game went green in this session, not that the stop button
-    was pressed.
+    So: the lab never came up, still up, finished everything, or did not.
+    Completing means every task of the game went green in this session, not
+    that the stop button was pressed.
+
+    failed_to_start comes first, and ahead of running: once CloudFormation
+    has rolled back there is no lab, whether or not the player has pressed
+    stop yet. It is also the only one of the four that is not about them,
+    and it used to read as "did not finish" — which is what let eight
+    broken attempts at game19 look like eight unmotivated ones.
     """
+    if session.get('create_failed_at'):
+        return 'failed_to_start'
+
     if session.get('active'):
         return 'running'
 
@@ -128,6 +137,10 @@ def per_game(sessions, titles, finished_pairs):
 
     completions counts the players who ever finished it, not the sessions
     that finished it, so replaying a game does not inflate it.
+
+    failed_to_start counts sessions whose stack never built. A game with a
+    column of those is not an unpopular game, it is a broken one, and that
+    is the number the maintenance flag will key off.
     """
     rows = {}
     for session in sessions:
@@ -140,11 +153,16 @@ def per_game(sessions, titles, finished_pairs):
             'title': titles.get(game_id, game_id),
             'sessions': 0,
             'completions': 0,
+            'failed_to_start': 0,
             'tasks_completed': 0,
             '_durations': [],
         })
         row['sessions'] += 1
         row['tasks_completed'] += len(completed_tasks(session))
+        if session.get('create_failed_at'):
+            # Per game rather than per player: one game failing for everyone
+            # is a broken template, and this column is where that shows.
+            row['failed_to_start'] += 1
 
         seconds = duration_seconds(session)
         if seconds is not None:

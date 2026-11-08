@@ -25,7 +25,7 @@ def agg():
 def a_session(user=PLAYER, game_id='game1', start='2026-10-25T10:00:00Z',
               end='2026-10-25T11:00:00Z', reason='ended by player',
               status='CLEANUP_COMPLETE', tasks=None, active=False,
-              title=None, tasks_total=None):
+              title=None, tasks_total=None, create_failed_at=None):
     session = {
         'session_id': f'{user}-{game_id}-{start}',
         'user_name': user,
@@ -39,6 +39,8 @@ def a_session(user=PLAYER, game_id='game1', start='2026-10-25T10:00:00Z',
         session['game_title'] = title
     if tasks_total:
         session['tasks_total'] = tasks_total
+    if create_failed_at:
+        session['create_failed_at'] = create_failed_at
     if end:
         session['end_time'] = end
     if reason:
@@ -443,3 +445,52 @@ def test_a_player_is_not_told_about_the_plumbing(handler, sessions_table):
     # A failed wipe is not theirs to read, and it is not about them.
     assert 'ending' not in rows[0]
     assert rows[0]['outcome'] in ('completed', 'unfinished')
+
+
+# --- a lab that never came up -----------------------------------------------
+
+FAILED_AT = '2026-10-25T10:02:00Z'
+
+
+def test_a_lab_that_never_built_is_not_the_player_giving_up(agg):
+    session = a_session(create_failed_at=FAILED_AT)
+
+    # The difference that matters. Both end with nothing done, and only one
+    # of them says anything about the person.
+    assert agg.outcome(session, task_count=2) == 'failed_to_start'
+    assert agg.outcome(a_session(), task_count=2) == 'unfinished'
+
+
+def test_a_failed_lab_is_not_reported_as_running(agg):
+    session = a_session(active=True, end=None, reason=None,
+                        create_failed_at=FAILED_AT)
+
+    # The stack rolled back; there is nothing to go back to, whether or not
+    # the player has pressed stop.
+    assert agg.outcome(session, task_count=2) == 'failed_to_start'
+
+
+def test_failures_are_counted_against_the_game(agg):
+    sessions = [
+        a_session(game_id='game19', create_failed_at=FAILED_AT),
+        a_session(game_id='game19', start='2026-10-25T12:00:00Z',
+                  create_failed_at=FAILED_AT),
+        a_session(game_id='game19', start='2026-10-25T13:00:00Z'),
+        a_session(game_id='game1'),
+    ]
+
+    rows = {r['game_id']: r for r in agg.per_game(sessions, {}, [])}
+
+    # Three sessions, two of which never got a lab. A column of these is a
+    # broken template, not an unpopular game.
+    assert rows['game19']['sessions'] == 3
+    assert rows['game19']['failed_to_start'] == 2
+    assert rows['game1']['failed_to_start'] == 0
+
+
+def test_a_failed_session_still_counts_as_a_session(agg):
+    rows = agg.per_game([a_session(create_failed_at=FAILED_AT)], {}, [])
+
+    # It claimed an account and ran a cleanup build, so hiding it would
+    # understate what the pool actually did.
+    assert rows[0]['sessions'] == 1
